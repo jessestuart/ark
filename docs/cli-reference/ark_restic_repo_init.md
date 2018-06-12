@@ -1,21 +1,23 @@
-## ark restic server
+## ark restic repo init
 
-Run the ark restic server
+initialize a restic repository for a specified namespace
 
 ### Synopsis
 
 
-Run the ark restic server
+initialize a restic repository for a specified namespace
 
 ```
-ark restic server [flags]
+ark restic repo init NAMESPACE [flags]
 ```
 
 ### Options
 
 ```
-  -h, --help        help for server
-      --log-level   the level at which to log. Valid values are debug, info, warning, error, fatal, panic. (default info)
+  -h, --help              help for init
+      --key-data string   Encryption key for the restic repository. Optional; if unset, Ark will generate a random key for you.
+      --key-file string   Path to file containing the encryption key for the restic repository. Optional; if unset, Ark will generate a random key for you.
+      --key-size int      Size of the generated key for the restic repository (default 1024)
 ```
 
 ### Options inherited from parent commands
@@ -34,5 +36,4 @@ ark restic server [flags]
 ```
 
 ### SEE ALSO
-* [ark restic](ark_restic.md)	 - Work with restic
-
+* [ark restic repo](ark_restic_repo.md)	 - Work with restic repositories
