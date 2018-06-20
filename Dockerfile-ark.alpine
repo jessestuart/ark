@@ -12,19 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM alpine:3.7
+ARG target=arm64v8
+FROM $target/alpine:3.7
+LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
-MAINTAINER Andy Goldstein <andy@heptio.com>
+COPY qemu-* /usr/bin/
+COPY ark /ark
 
-RUN apk add --no-cache ca-certificates
-
-RUN apk add --update --no-cache bzip2 && \
-    wget --quiet https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_amd64.bz2 && \
-    bunzip2 restic_0.9.1_linux_amd64.bz2 && \
-    mv restic_0.9.1_linux_amd64 /restic && \
+ADD https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_arm64.bz2 /restic.bz2
+RUN apk add --no-cache --update ca-certificates bzip2 && \
+    bunzip2 restic.bz2 && \
     chmod +x /restic
-
-ADD /bin/linux/amd64/ark /ark
 
 USER nobody:nobody
 
