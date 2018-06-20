@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM alpine:3.8
+FROM arm64v8/alpine:3.9
 
-MAINTAINER Steve Kriss <steve@heptio.com>
+COPY qemu-* /usr/bin/
 
+LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
+
+# TODO
 ADD /bin/linux/amd64/velero-restic-restore-helper .
 
 USER nobody:nobody
