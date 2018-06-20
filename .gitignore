@@ -28,6 +28,7 @@ _testmain.go
 debug
 
 /ark
+/ark-restic-restore-helper
 .idea/
 
 .container-*
@@ -41,3 +42,7 @@ debug
 _site/
 
 .vs
+
+qemu-*
+cmd/ark/ark
+cmd/ark-restic-restore-helper/ark-restic-restore-helper

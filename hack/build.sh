@@ -18,6 +18,22 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+
+BIN=ark
+
+# This repo's root import path (under GOPATH).
+PKG=github.com/heptio/ark
+
+# Where to push the docker image.
+REGISTRY=jessestuart/heptio-ark
+
+# Which architecture to build - see $(ALL_ARCH) for options.
+export ARCH=linux-arm64
+export VERSION=master
+export TAG_LATEST=true
+export GOOS=linux
+export GOARCH=arm64
+
 if [ -z "${PKG}" ]; then
     echo "PKG must be set"
     exit 1
@@ -62,7 +78,7 @@ if [[ "${GOOS}" = "windows" ]]; then
 fi
 
 go build \
-    -o ${OUTPUT} \
+  -o ${OUTPUT} \
     -installsuffix "static" \
     -ldflags "${LDFLAGS}" \
     ${PKG}/cmd/${BIN}

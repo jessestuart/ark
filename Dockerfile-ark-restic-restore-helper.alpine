@@ -12,11 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM alpine:3.8
+FROM arm64v8/alpine:3.7
 
-MAINTAINER Steve Kriss <steve@heptio.com>
+COPY qemu-* /usr/bin/
 
-ADD /bin/linux/amd64/ark-restic-restore-helper .
+LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
+
+COPY ark-restic-restore-helper /
 
 USER nobody:nobody
 
