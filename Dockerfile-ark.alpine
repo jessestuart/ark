@@ -13,16 +13,15 @@
 # limitations under the License.
 
 ARG target=arm64v8
-FROM $target/alpine:3.7
+FROM $target/busybox
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
 COPY qemu-* /usr/bin/
 COPY ark /ark
 
-ADD https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_arm64.bz2 /restic.bz2
-RUN apk add --no-cache --update ca-certificates bzip2 && \
-    bunzip2 restic.bz2 && \
-    chmod +x /restic
+ADD https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_arm.bz2 /restic.bz2
+# RUN apk add --no-cache --update ca-certificates bzip2 && \
+RUN bunzip2 restic.bz2 && chmod +x /restic
 
 USER nobody:nobody
 
