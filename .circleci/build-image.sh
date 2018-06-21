@@ -1,6 +1,7 @@
-#!/bin/sh
+#!/bin/bash
 
 export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+env
 cd $GOPATH/src/github.com/${GITHUB_REPO}
 # ============
 # <qemu-support>

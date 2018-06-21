@@ -49,12 +49,6 @@ shared: &shared
           source $BASH_ENV
           .circleci/install_go.sh
 
-    # - run:
-    #     name: Build binary.
-    #     command: |
-    #       source $BASH_ENV
-    #       .circleci/build-binary.sh
-
     - run:
         name: Build and push Docker image.
         command: |
@@ -93,23 +87,20 @@ jobs:
       - setup_remote_docker
 
       - run:
-        name: Add dynamic shared vars to env.
-        command: |
-          .circleci/load_env.sh
+          name: Add dynamic shared vars to env.
+          command: |
+            apk add --no-cache bash curl jq
+            .circleci/load_env.sh
 
       - run:
           name: Install manifest-tool.
           command: |
-            echo "Downloading manifest-tool."
-            wget https://github.com/estesp/manifest-tool/releases/download/v0.7.0/manifest-tool-linux-amd64
-            mv manifest-tool-linux-amd64 /usr/bin/manifest-tool
-            chmod +x /usr/bin/manifest-tool
-            manifest-tool --version
+            .circleci/install_manifest_tool.sh
 
       - run:
           name: Push Docker manifest.
           command: |
-            export VERSION=$(cat ~/VERSION)
+            source $BASH_ENV
             echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin;
             manifest-tool push from-args \
               --platforms linux/amd64,linux/arm,linux/arm64 \
