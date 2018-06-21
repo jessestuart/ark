@@ -1,0 +1,11 @@
+[ver:1,total:120]
+Dockerfile-ark.alpine:60,1529568000:60,r
+.git/COMMIT_EDITMSG:60,1529568000:60,r
+
+[ver:1,total:60]
+Dockerfile-ark.alpine:30,1529568000:30,m
+.git/COMMIT_EDITMSG:30,1529568000:30,r
+
+[ver:1,total:120]
+Dockerfile-ark.alpine:60,1529568000:60,m
+.git/COMMIT_EDITMSG:60,1529568000:60,r
