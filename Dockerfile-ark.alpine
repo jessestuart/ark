@@ -12,16 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-ARG target=arm64v8
-FROM $target/busybox
-LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
+FROM alpine:3.7
 
-COPY qemu-* /usr/bin/
-COPY ark /ark
+MAINTAINER Andy Goldstein <andy@heptio.com>
 
-ADD https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_arm.bz2 /restic.bz2
-# RUN apk add --no-cache --update ca-certificates bzip2 && \
-RUN bunzip2 restic.bz2 && chmod +x /restic
+RUN apk add --no-cache ca-certificates
+
+RUN apk add --update --no-cache bzip2 && \
+    wget --quiet https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_amd64.bz2 && \
+    bunzip2 restic_0.9.1_linux_amd64.bz2 && \
+    mv restic_0.9.1_linux_amd64 /usr/bin/restic && \
+    chmod +x /usr/bin/restic
+
+ADD /bin/linux/amd64/ark /ark
 
 USER nobody:nobody
 
