@@ -9,3 +9,10 @@ Dockerfile-ark.alpine:30,1529568000:30,m
 [ver:1,total:120]
 Dockerfile-ark.alpine:60,1529568000:60,m
 .git/COMMIT_EDITMSG:60,1529568000:60,r
+
+[ver:1,total:240]
+.circleci/config.yml:220,1529564400:220,m
+.circleci/load_env.sh:20,1529564400:20,m
+
+[ver:1,total:120]
+.circleci/config.yml:120,1529564400:120,m
