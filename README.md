@@ -6,32 +6,40 @@
 
 ## Overview
 
-Ark gives you tools to back up and restore your Kubernetes cluster resources and persistent volumes. Ark lets you:
+Ark gives you tools to back up and restore your Kubernetes cluster resources and
+persistent volumes. Ark lets you:
 
-* Take backups of your cluster and restore in case of loss.
-* Copy cluster resources across cloud providers. NOTE: Cloud volume migrations are not yet supported.
-* Replicate your production environment for development and testing environments.
+- Take backups of your cluster and restore in case of loss.
+- Copy cluster resources across cloud providers. NOTE: Cloud volume migrations
+  are not yet supported.
+- Replicate your production environment for development and testing
+  environments.
 
 Ark consists of:
 
-* A server that runs on your cluster
-* A command-line client that runs locally
+- A server that runs on your cluster
+- A command-line client that runs locally
 
 ## More information
 
-[The documentation][29] provides detailed information about building from source, architecture, extending Ark, and more.
+[The documentation][29] provides detailed information about building from
+source, architecture, extending Ark, and more.
 
 ## Getting started
 
-The following example sets up the Ark server and client, then backs up and restores a sample application.
+The following example sets up the Ark server and client, then backs up and
+restores a sample application.
 
-For simplicity, the example uses Minio, an S3-compatible storage service that runs locally on your cluster. See [Set up Ark with your cloud provider][3] for how to run on a cloud provider. 
+For simplicity, the example uses Minio, an S3-compatible storage service that
+runs locally on your cluster. See [Set up Ark with your cloud provider][3] for
+how to run on a cloud provider.
 
 ### Prerequisites
 
-* Access to a Kubernetes cluster, version 1.7 or later. Version 1.7.5 or later is required to run `ark backup delete`.
-* A DNS server on the cluster
-* `kubectl` installed
+- Access to a Kubernetes cluster, version 1.7 or later. Version 1.7.5 or later
+  is required to run `ark backup delete`.
+- A DNS server on the cluster
+- `kubectl` installed
 
 ### Download
 
@@ -41,26 +49,31 @@ Clone or fork the Ark repository:
 git clone git@github.com:heptio/ark.git
 ```
 
-NOTE: Make sure to check out the appropriate version. We recommend that you check out the latest tagged version. The master branch is under active development and might not be stable.
+NOTE: Make sure to check out the appropriate version. We recommend that you
+check out the latest tagged version. The master branch is under active
+development and might not be stable.
 
 ### Set up server
 
-1. Start the server and the local storage service. In the root directory of Ark, run:
+1.  Start the server and the local storage service. In the root directory of
+    Ark, run:
 
     ```bash
     kubectl apply -f examples/common/00-prereqs.yaml
     kubectl apply -f examples/minio/
     ```
 
-    NOTE: If you get an error about Config creation, wait for a minute, then run the commands again.
+    NOTE: If you get an error about Config creation, wait for a minute, then run
+    the commands again.
 
-1. Deploy the example nginx application:
+1.  Deploy the example nginx application:
 
     ```bash
     kubectl apply -f examples/nginx-app/base.yaml
     ```
 
-1. Check to see that both the Ark and nginx deployments are successfully created:
+1.  Check to see that both the Ark and nginx deployments are successfully
+    created:
 
     ```
     kubectl get deployments -l component=ark --namespace=heptio-ark
@@ -77,25 +90,26 @@ Make sure that you install somewhere in your `$PATH`.
 
 ### Back up
 
-1. Create a backup for any object that matches the `app=nginx` label selector:
+1.  Create a backup for any object that matches the `app=nginx` label selector:
 
     ```
     ark backup create nginx-backup --selector app=nginx
     ```
 
-   Alternatively if you want to backup all objects *except* those matching the label `backup=ignore`:
+    Alternatively if you want to backup all objects _except_ those matching the
+    label `backup=ignore`:
 
-   ```
-   ark backup create nginx-backup --selector 'backup notin (ignore)'
-   ```
+    ```
+    ark backup create nginx-backup --selector 'backup notin (ignore)'
+    ```
 
-1. Simulate a disaster:
+1.  Simulate a disaster:
 
     ```
     kubectl delete namespace nginx-example
     ```
 
-1. To check that the nginx deployment and service are gone, run:
+1.  To check that the nginx deployment and service are gone, run:
 
     ```
     kubectl get deployments --namespace=nginx-example
@@ -104,18 +118,19 @@ Make sure that you install somewhere in your `$PATH`.
     ```
 
     You should get no results.
-    
-    NOTE: You might need to wait for a few minutes for the namespace to be fully cleaned up.
+
+    NOTE: You might need to wait for a few minutes for the namespace to be fully
+    cleaned up.
 
 ### Restore
 
-1. Run:
+1.  Run:
 
     ```
     ark restore create --from-backup nginx-backup
     ```
 
-1. Run:
+1.  Run:
 
     ```
     ark restore get
@@ -128,9 +143,12 @@ Make sure that you install somewhere in your `$PATH`.
     nginx-backup-20170727200524   nginx-backup   Completed   0          0         2017-07-27 20:05:24 +0000 UTC   <none>
     ```
 
-NOTE: The restore can take a few moments to finish. During this time, the `STATUS` column reads `InProgress`.
+NOTE: The restore can take a few moments to finish. During this time, the
+`STATUS` column reads `InProgress`.
 
-After a successful restore, the `STATUS` column is `Completed`, and `WARNINGS` and `ERRORS` are 0. All objects in the `nginx-example` namespacee should be just as they were before you deleted them.
+After a successful restore, the `STATUS` column is `Completed`, and `WARNINGS`
+and `ERRORS` are 0. All objects in the `nginx-example` namespacee should be just
+as they were before you deleted them.
 
 If there are errors or warnings, you can look at them in detail:
 
@@ -142,16 +160,17 @@ For more information, see [the debugging information][18].
 
 ### Clean up
 
-If you want to delete any backups you created, including data in object storage and persistent
-volume snapshots, you can run:
+If you want to delete any backups you created, including data in object storage
+and persistent volume snapshots, you can run:
 
 ```
 ark backup delete BACKUP_NAME
 ```
 
-This asks the Ark server to delete all backup data associated with `BACKUP_NAME`.  You need to do
-this for each backup you want to permanently delete. A future version of Ark will allow you to
-delete multiple backups by name or label selector.
+This asks the Ark server to delete all backup data associated with
+`BACKUP_NAME`. You need to do this for each backup you want to permanently
+delete. A future version of Ark will allow you to delete multiple backups by
+name or label selector.
 
 Once fully removed, the backup is no longer visible when you run:
 
@@ -159,9 +178,9 @@ Once fully removed, the backup is no longer visible when you run:
 ark backup get BACKUP_NAME
 ```
 
-If you want to uninstall Ark but preserve the backup data in object storage and persistent volume
-snapshots, it is safe to remove the `heptio-ark` namespace and everything else created for this
-example:
+If you want to uninstall Ark but preserve the backup data in object storage and
+persistent volume snapshots, it is safe to remove the `heptio-ark` namespace and
+everything else created for this example:
 
 ```
 kubectl delete -f examples/common/
@@ -171,7 +190,9 @@ kubectl delete -f examples/nginx-app/base.yaml
 
 ## Troubleshooting
 
-If you encounter issues, review the [troubleshooting docs][30], [file an issue][4], or talk to us on the [#ark-dr channel][25] on the Kubernetes Slack server. 
+If you encounter issues, review the [troubleshooting docs][30], [file an
+issue][4], or talk to us on the [#ark-dr channel][25] on the Kubernetes Slack
+server.
 
 ## Contributing
 
@@ -181,12 +202,14 @@ Feedback and discussion is available on [the mailing list][24].
 
 #### Before you start
 
-* Please familiarize yourself with the [Code of Conduct][8] before contributing.
-* See [CONTRIBUTING.md][5] for instructions on the developer certificate of origin that we require.
+- Please familiarize yourself with the [Code of Conduct][8] before contributing.
+- See [CONTRIBUTING.md][5] for instructions on the developer certificate of
+  origin that we require.
 
 #### Pull requests
 
-* We welcome pull requests. Feel free to dig through the [issues][4] and jump in.
+- We welcome pull requests. Feel free to dig through the [issues][4] and jump
+  in.
 
 ## Changelog
 
@@ -202,9 +225,11 @@ See [the list of releases][6] to find out about feature changes.
 [7]: /docs/build-from-scratch.md
 [8]: https://github.com/heptio/ark/blob/master/CODE_OF_CONDUCT.md
 [9]: https://kubernetes.io/docs/setup/
-[10]: https://kubernetes.io/docs/tasks/tools/install-kubectl/#install-with-homebrew-on-macos
+[10]:
+  https://kubernetes.io/docs/tasks/tools/install-kubectl/#install-with-homebrew-on-macos
 [11]: https://kubernetes.io/docs/tasks/tools/install-kubectl/#tabset-1
-[12]: https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/dns/README.md
+[12]:
+  https://github.com/kubernetes/kubernetes/blob/master/cluster/addons/dns/README.md
 [13]: /docs/output-file-format.md
 [14]: https://github.com/kubernetes/kubernetes
 [15]: https://aws.amazon.com/
@@ -212,8 +237,10 @@ See [the list of releases][6] to find out about feature changes.
 [17]: https://azure.microsoft.com/
 [18]: /docs/debugging-restores.md
 [19]: /docs/img/backup-process.png
-[20]: https://kubernetes.io/docs/concepts/api-extension/custom-resources/#customresourcedefinitions
-[21]: https://kubernetes.io/docs/concepts/api-extension/custom-resources/#custom-controllers
+[20]:
+  https://kubernetes.io/docs/concepts/api-extension/custom-resources/#customresourcedefinitions
+[21]:
+  https://kubernetes.io/docs/concepts/api-extension/custom-resources/#custom-controllers
 [22]: https://github.com/coreos/etcd
 [24]: http://j.hept.io/ark-list
 [25]: https://kubernetes.slack.com/messages/ark-dr
