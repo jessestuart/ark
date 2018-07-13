@@ -30,7 +30,8 @@ ARG goarch
 ADD https://github.com/restic/restic/releases/download/v0.9.1/restic_0.9.1_linux_${goarch}.bz2 /restic.bz2
 RUN apk add --no-cache --update ca-certificates && \
     bunzip2 restic.bz2 && \
-    chmod +x /restic
+    chmod +x /restic && \
+    mv /restic /usr/bin/restic
 
 USER nobody
 
