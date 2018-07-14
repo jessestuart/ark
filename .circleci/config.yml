@@ -44,12 +44,6 @@ shared: &shared
           .circleci/load_env.sh
 
     - run:
-        name: Update Go version.
-        command: |
-          source $BASH_ENV
-          .circleci/install_go.sh
-
-    - run:
         name: Build and push Docker image.
         command: |
           source $BASH_ENV
