@@ -18,7 +18,6 @@ fi
 cp -f $DIR/Dockerfile .
 docker build -t ${IMAGE_ID} \
   --build-arg target=$TARGET \
-  --build-arg arch=$QEMU_ARCH \
   --build-arg goarch=$GOARCH \
   --build-arg image=${GITHUB_REPO} .
 
