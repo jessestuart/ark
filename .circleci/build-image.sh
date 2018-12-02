@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+WORKDIR="$GOPATH/src/github.com/$GITHUB_REPO"
+mkdir -p "$WORKDIR" && cd "$WORKDIR" || exit 1
 
-cd $GOPATH/src/github.com/${GITHUB_REPO}
 # ============
 # <qemu-support>
 if [ $GOARCH == 'amd64' ]; then
@@ -15,14 +15,14 @@ fi
 # ============
 
 # Replace the repo's Dockerfile with our own.
-cp -f $DIR/Dockerfile .
-docker build -t ${IMAGE_ID} \
+cp -f "$DIR/Dockerfile" .
+docker build -t $IMAGE_ID \
   --build-arg target=$TARGET \
   --build-arg goarch=$GOARCH \
-  --build-arg image=${GITHUB_REPO} .
+  --build-arg image=$GITHUB_REPO .
 
 # Login to Docker Hub.
-echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
+docker login -u $DOCKERHUB_USER -p $DOCKERHUB_PASS
 # Push push push
 docker push ${IMAGE_ID}
 if [ $CIRCLE_BRANCH == 'master' ]; then
