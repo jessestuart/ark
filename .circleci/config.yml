@@ -41,13 +41,13 @@ shared: &shared
     - run:
         name: Add dynamic shared vars to env.
         command: |
-          .circleci/load_env.sh
+          sh .circleci/load_env.sh
 
     - run:
         name: Build and push Docker image.
         command: |
           source $BASH_ENV
-          .circleci/build-image.sh
+          sh .circleci/build-image.sh
 
 jobs:
   # TODO: Consolidate $TAG and $TARGET.
@@ -75,7 +75,7 @@ jobs:
 
   push-manifest:
     docker:
-      - image: docker:18
+      - image: docker:stable-git
     steps:
       - checkout
       - setup_remote_docker
@@ -84,25 +84,14 @@ jobs:
           name: Add dynamic shared vars to env.
           command: |
             apk add --no-cache bash curl jq
-            .circleci/load_env.sh
+            sh .circleci/load_env.sh
 
       - run:
           name: Install manifest-tool.
           command: |
-            .circleci/install_manifest_tool.sh
+            sh .circleci/install_manifest_tool.sh
 
       - run:
           name: Push Docker manifest.
           command: |
-            source $BASH_ENV
-            echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin;
-            manifest-tool push from-args \
-              --platforms linux/amd64,linux/arm,linux/arm64 \
-              --template "$REGISTRY/$IMAGE:$VERSION-ARCH" \
-              --target "$REGISTRY/$IMAGE:$VERSION"
-            if [ "${CIRCLE_BRANCH}" == 'master' ]; then
-              manifest-tool push from-args \
-                --platforms linux/amd64,linux/arm,linux/arm64 \
-                --template "$REGISTRY/$IMAGE:$VERSION-ARCH" \
-                --target "$REGISTRY/$IMAGE:latest"
-            fi
+            sh .circleci/push_manifest.sh
