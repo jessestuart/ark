@@ -2,7 +2,8 @@
 
 export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
 
-cd $GOPATH/src/github.com/${GITHUB_REPO}
+WORKING_DIR="$GOPATH/src/github.com/${GITHUB_REPO}"
+mkdir -p $WORKING_DIR && cd $WORKING_DIR
 # ============
 # <qemu-support>
 if [ $GOARCH == 'amd64' ]; then

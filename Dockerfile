@@ -2,7 +2,7 @@
 # Build stage.
 # ==================
 ARG target
-FROM golang:1.10 as builder
+FROM golang:1.11 as builder
 
 ARG goarch
 ENV GOARCH $goarch
