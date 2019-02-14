@@ -32,7 +32,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -42,22 +42,23 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kubeerrs "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	corev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 
-	api "github.com/heptio/ark/pkg/apis/ark/v1"
-	"github.com/heptio/ark/pkg/client"
-	"github.com/heptio/ark/pkg/cloudprovider"
-	"github.com/heptio/ark/pkg/discovery"
-	listers "github.com/heptio/ark/pkg/generated/listers/ark/v1"
-	"github.com/heptio/ark/pkg/kuberesource"
-	"github.com/heptio/ark/pkg/restic"
-	"github.com/heptio/ark/pkg/util/boolptr"
-	"github.com/heptio/ark/pkg/util/collections"
-	"github.com/heptio/ark/pkg/util/filesystem"
-	"github.com/heptio/ark/pkg/util/kube"
-	arksync "github.com/heptio/ark/pkg/util/sync"
-	"github.com/heptio/ark/pkg/volume"
+	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/client"
+	"github.com/heptio/velero/pkg/cloudprovider"
+	"github.com/heptio/velero/pkg/discovery"
+	listers "github.com/heptio/velero/pkg/generated/listers/velero/v1"
+	"github.com/heptio/velero/pkg/kuberesource"
+	"github.com/heptio/velero/pkg/restic"
+	"github.com/heptio/velero/pkg/util/boolptr"
+	"github.com/heptio/velero/pkg/util/collections"
+	"github.com/heptio/velero/pkg/util/filesystem"
+	"github.com/heptio/velero/pkg/util/kube"
+	velerosync "github.com/heptio/velero/pkg/util/sync"
+	"github.com/heptio/velero/pkg/volume"
 )
 
 type BlockStoreGetter interface {
@@ -83,14 +84,15 @@ type kindString string
 
 // kubernetesRestorer implements Restorer for restoring into a Kubernetes cluster.
 type kubernetesRestorer struct {
-	discoveryHelper       discovery.Helper
-	dynamicFactory        client.DynamicFactory
-	namespaceClient       corev1.NamespaceInterface
-	resticRestorerFactory restic.RestorerFactory
-	resticTimeout         time.Duration
-	resourcePriorities    []string
-	fileSystem            filesystem.Interface
-	logger                logrus.FieldLogger
+	discoveryHelper            discovery.Helper
+	dynamicFactory             client.DynamicFactory
+	namespaceClient            corev1.NamespaceInterface
+	resticRestorerFactory      restic.RestorerFactory
+	resticTimeout              time.Duration
+	resourceTerminatingTimeout time.Duration
+	resourcePriorities         []string
+	fileSystem                 filesystem.Interface
+	logger                     logrus.FieldLogger
 }
 
 // prioritizeResources returns an ordered, fully-resolved list of resources to restore based on
@@ -159,17 +161,19 @@ func NewKubernetesRestorer(
 	namespaceClient corev1.NamespaceInterface,
 	resticRestorerFactory restic.RestorerFactory,
 	resticTimeout time.Duration,
+	resourceTerminatingTimeout time.Duration,
 	logger logrus.FieldLogger,
 ) (Restorer, error) {
 	return &kubernetesRestorer{
-		discoveryHelper:       discoveryHelper,
-		dynamicFactory:        dynamicFactory,
-		namespaceClient:       namespaceClient,
-		resticRestorerFactory: resticRestorerFactory,
-		resticTimeout:         resticTimeout,
-		resourcePriorities:    resourcePriorities,
-		logger:                logger,
-		fileSystem:            filesystem.NewFileSystem(),
+		discoveryHelper:            discoveryHelper,
+		dynamicFactory:             dynamicFactory,
+		namespaceClient:            namespaceClient,
+		resticRestorerFactory:      resticRestorerFactory,
+		resticTimeout:              resticTimeout,
+		resourceTerminatingTimeout: resourceTerminatingTimeout,
+		resourcePriorities:         resourcePriorities,
+		logger:                     logger,
+		fileSystem:                 filesystem.NewFileSystem(),
 	}, nil
 }
 
@@ -245,21 +249,22 @@ func (kr *kubernetesRestorer) Restore(
 	}
 
 	restoreCtx := &context{
-		backup:               backup,
-		backupReader:         backupReader,
-		restore:              restore,
-		prioritizedResources: prioritizedResources,
-		selector:             selector,
-		log:                  log,
-		dynamicFactory:       kr.dynamicFactory,
-		fileSystem:           kr.fileSystem,
-		namespaceClient:      kr.namespaceClient,
-		actions:              resolvedActions,
-		blockStoreGetter:     blockStoreGetter,
-		resticRestorer:       resticRestorer,
-		pvsToProvision:       sets.NewString(),
-		pvRestorer:           pvRestorer,
-		volumeSnapshots:      volumeSnapshots,
+		backup:                     backup,
+		backupReader:               backupReader,
+		restore:                    restore,
+		prioritizedResources:       prioritizedResources,
+		selector:                   selector,
+		log:                        log,
+		dynamicFactory:             kr.dynamicFactory,
+		fileSystem:                 kr.fileSystem,
+		namespaceClient:            kr.namespaceClient,
+		actions:                    resolvedActions,
+		blockStoreGetter:           blockStoreGetter,
+		resticRestorer:             resticRestorer,
+		pvsToProvision:             sets.NewString(),
+		pvRestorer:                 pvRestorer,
+		volumeSnapshots:            volumeSnapshots,
+		resourceTerminatingTimeout: kr.resourceTerminatingTimeout,
 	}
 
 	return restoreCtx.execute()
@@ -327,24 +332,25 @@ func resolveActions(actions []ItemAction, helper discovery.Helper) ([]resolvedAc
 }
 
 type context struct {
-	backup               *api.Backup
-	backupReader         io.Reader
-	restore              *api.Restore
-	prioritizedResources []schema.GroupResource
-	selector             labels.Selector
-	log                  logrus.FieldLogger
-	dynamicFactory       client.DynamicFactory
-	fileSystem           filesystem.Interface
-	namespaceClient      corev1.NamespaceInterface
-	actions              []resolvedAction
-	blockStoreGetter     BlockStoreGetter
-	resticRestorer       restic.Restorer
-	globalWaitGroup      arksync.ErrorGroup
-	resourceWaitGroup    sync.WaitGroup
-	resourceWatches      []watch.Interface
-	pvsToProvision       sets.String
-	pvRestorer           PVRestorer
-	volumeSnapshots      []*volume.Snapshot
+	backup                     *api.Backup
+	backupReader               io.Reader
+	restore                    *api.Restore
+	prioritizedResources       []schema.GroupResource
+	selector                   labels.Selector
+	log                        logrus.FieldLogger
+	dynamicFactory             client.DynamicFactory
+	fileSystem                 filesystem.Interface
+	namespaceClient            corev1.NamespaceInterface
+	actions                    []resolvedAction
+	blockStoreGetter           BlockStoreGetter
+	resticRestorer             restic.Restorer
+	globalWaitGroup            velerosync.ErrorGroup
+	resourceWaitGroup          sync.WaitGroup
+	resourceWatches            []watch.Interface
+	pvsToProvision             sets.String
+	pvRestorer                 PVRestorer
+	volumeSnapshots            []*volume.Snapshot
+	resourceTerminatingTimeout time.Duration
 }
 
 func (ctx *context) execute() (api.RestoreResult, api.RestoreResult) {
@@ -373,17 +379,17 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 	resourcesDir := filepath.Join(dir, api.ResourcesDir)
 	rde, err := ctx.fileSystem.DirExists(resourcesDir)
 	if err != nil {
-		addArkError(&errs, err)
+		addVeleroError(&errs, err)
 		return warnings, errs
 	}
 	if !rde {
-		addArkError(&errs, errors.New("backup does not contain top level resources directory"))
+		addVeleroError(&errs, errors.New("backup does not contain top level resources directory"))
 		return warnings, errs
 	}
 
 	resourceDirs, err := ctx.fileSystem.ReadDir(resourcesDir)
 	if err != nil {
-		addArkError(&errs, err)
+		addVeleroError(&errs, err)
 		return warnings, errs
 	}
 
@@ -423,7 +429,7 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 		clusterSubDir := filepath.Join(resourcePath, api.ClusterScopedDir)
 		clusterSubDirExists, err := ctx.fileSystem.DirExists(clusterSubDir)
 		if err != nil {
-			addArkError(&errs, err)
+			addVeleroError(&errs, err)
 			return warnings, errs
 		}
 		if clusterSubDirExists {
@@ -436,7 +442,7 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 		nsSubDir := filepath.Join(resourcePath, api.NamespaceScopedDir)
 		nsSubDirExists, err := ctx.fileSystem.DirExists(nsSubDir)
 		if err != nil {
-			addArkError(&errs, err)
+			addVeleroError(&errs, err)
 			return warnings, errs
 		}
 		if !nsSubDirExists {
@@ -445,7 +451,7 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 
 		nsDirs, err := ctx.fileSystem.ReadDir(nsSubDir)
 		if err != nil {
-			addArkError(&errs, err)
+			addVeleroError(&errs, err)
 			return warnings, errs
 		}
 
@@ -474,8 +480,8 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 			if !existingNamespaces.Has(mappedNsName) {
 				logger := ctx.log.WithField("namespace", nsName)
 				ns := getNamespace(logger, filepath.Join(dir, api.ResourcesDir, "namespaces", api.ClusterScopedDir, nsName+".json"), mappedNsName)
-				if _, err := kube.EnsureNamespaceExists(ns, ctx.namespaceClient); err != nil {
-					addArkError(&errs, err)
+				if _, err := kube.EnsureNamespaceExistsAndIsReady(ns, ctx.namespaceClient, ctx.resourceTerminatingTimeout); err != nil {
+					addVeleroError(&errs, err)
 					continue
 				}
 
@@ -501,10 +507,10 @@ func (ctx *context) restoreFromDir(dir string) (api.RestoreResult, api.RestoreRe
 	ctx.log.Debug("Done waiting on global wait group")
 
 	for _, err := range waitErrs {
-		// TODO not ideal to be adding these to Ark-level errors
+		// TODO not ideal to be adding these to Velero-level errors
 		// rather than a specific namespace, but don't have a way
 		// to track the namespace right now.
-		errs.Ark = append(errs.Ark, err.Error())
+		errs.Velero = append(errs.Velero, err.Error())
 	}
 
 	return warnings, errs
@@ -550,7 +556,7 @@ func getNamespace(logger logrus.FieldLogger, path, remappedName string) *v1.Name
 // by appending the corresponding lists to one another.
 func merge(a, b *api.RestoreResult) {
 	a.Cluster = append(a.Cluster, b.Cluster...)
-	a.Ark = append(a.Ark, b.Ark...)
+	a.Velero = append(a.Velero, b.Velero...)
 	for k, v := range b.Namespaces {
 		if a.Namespaces == nil {
 			a.Namespaces = make(map[string][]string)
@@ -559,9 +565,9 @@ func merge(a, b *api.RestoreResult) {
 	}
 }
 
-// addArkError appends an error to the provided RestoreResult's Ark list.
-func addArkError(r *api.RestoreResult, err error) {
-	r.Ark = append(r.Ark, err.Error())
+// addVeleroError appends an error to the provided RestoreResult's Velero list.
+func addVeleroError(r *api.RestoreResult, err error) {
+	r.Velero = append(r.Velero, err.Error())
 }
 
 // addToResult appends an error to the provided RestoreResult, either within
@@ -576,6 +582,102 @@ func addToResult(r *api.RestoreResult, ns string, e error) {
 		}
 		r.Namespaces[ns] = append(r.Namespaces[ns], e.Error())
 	}
+}
+
+func (ctx *context) shouldRestore(name string, pvClient client.Dynamic) (bool, error) {
+	pvLogger := ctx.log.WithField("pvName", name)
+
+	var shouldRestore bool
+	err := wait.PollImmediate(time.Second, ctx.resourceTerminatingTimeout, func() (bool, error) {
+		clusterPV, err := pvClient.Get(name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			pvLogger.Debug("PV not found, safe to restore")
+			// PV not found, can safely exit loop and proceed with restore.
+			shouldRestore = true
+			return true, nil
+		}
+		if err != nil {
+			return false, errors.Wrapf(err, "could not retrieve in-cluster copy of PV %s", name)
+
+		}
+		phase, err := collections.GetString(clusterPV.UnstructuredContent(), "status.phase")
+		if err != nil {
+			// Break the loop since we couldn't read the phase
+			return false, errors.Wrapf(err, "error getting phase for in-cluster PV %s", name)
+		}
+
+		if phase == string(v1.VolumeReleased) || clusterPV.GetDeletionTimestamp() != nil {
+			// PV was found and marked for deletion, or it was released; wait for it to go away.
+			pvLogger.Debugf("PV found, but marked for deletion, waiting")
+			return false, nil
+		}
+
+		// Check for the namespace and PVC to see if anything that's referencing the PV is deleting.
+		// If either the namespace or PVC is in a deleting/terminating state, wait for them to finish before
+		// trying to restore the PV
+		// Not doing so may result in the underlying PV disappearing but not restoring due to timing issues,
+		// then the PVC getting restored and showing as lost.
+		namespace, err := collections.GetString(clusterPV.UnstructuredContent(), "spec.claimRef.namespace")
+		if err != nil {
+			return false, errors.Wrapf(err, "error looking up namespace name for in-cluster PV %s", name)
+		}
+		pvcName, err := collections.GetString(clusterPV.UnstructuredContent(), "spec.claimRef.name")
+		if err != nil {
+			return false, errors.Wrapf(err, "error looking up persistentvolumeclaim for in-cluster PV %s", name)
+		}
+
+		// Have to create the PVC client here because we don't know what namespace we're using til we get to this point.
+		// Using a dynamic client since it's easier to mock for testing
+		pvcResource := metav1.APIResource{Name: "persistentvolumeclaims", Namespaced: true}
+		pvcClient, err := ctx.dynamicFactory.ClientForGroupVersionResource(schema.GroupVersion{Group: "", Version: "v1"}, pvcResource, namespace)
+		if err != nil {
+			return false, errors.Wrapf(err, "error getting pvc client")
+		}
+
+		pvc, err := pvcClient.Get(pvcName, metav1.GetOptions{})
+
+		if apierrors.IsNotFound(err) {
+			pvLogger.Debugf("PVC %s for PV not found, waiting", pvcName)
+			// PVC wasn't found, but the PV still exists, so continue to wait.
+			return false, nil
+		}
+		if err != nil {
+			return false, errors.Wrapf(err, "error getting claim %s for persistent volume", pvcName)
+		}
+
+		if pvc != nil && pvc.GetDeletionTimestamp() != nil {
+			pvLogger.Debugf("PVC for PV marked for deletion, waiting")
+			// PVC is still deleting, continue to wait.
+			return false, nil
+		}
+
+		// Check the namespace associated with the claimRef to see if it's deleting/terminating before proceeding
+		ns, err := ctx.namespaceClient.Get(namespace, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			pvLogger.Debugf("namespace %s for PV not found, waiting", namespace)
+			// namespace not found but the PV still exists, so continue to wait
+			return false, nil
+		}
+		if err != nil {
+			return false, errors.Wrapf(err, "error getting namespace %s associated with PV %s", namespace, name)
+		}
+
+		if ns != nil && (ns.GetDeletionTimestamp() != nil || ns.Status.Phase == v1.NamespaceTerminating) {
+			pvLogger.Debugf("namespace %s associated with PV is deleting, waiting", namespace)
+			// namespace is in the process of deleting, keep looping
+			return false, nil
+		}
+
+		// None of the PV, PVC, or NS are marked for deletion, break the loop.
+		pvLogger.Debug("PV, associated PVC and namespace are not marked for deletion")
+		return true, nil
+	})
+
+	if err == wait.ErrWaitTimeout {
+		pvLogger.Debug("timeout reached waiting for persistent volume to delete")
+	}
+
+	return shouldRestore, err
 }
 
 // restoreResource restores the specified cluster or namespace scoped resource. If namespace is
@@ -659,7 +761,7 @@ func (ctx *context) restoreResource(resource, namespace, resourcePath string) (a
 			var err error
 			resourceClient, err = ctx.dynamicFactory.ClientForGroupVersionResource(obj.GroupVersionKind().GroupVersion(), resource, namespace)
 			if err != nil {
-				addArkError(&errs, fmt.Errorf("error getting resource client for namespace %q, resource %q: %v", namespace, &groupResource, err))
+				addVeleroError(&errs, fmt.Errorf("error getting resource client for namespace %q, resource %q: %v", namespace, &groupResource, err))
 				return warnings, errs
 			}
 		}
@@ -696,10 +798,15 @@ func (ctx *context) restoreResource(resource, namespace, resourcePath string) (a
 
 			// Check if the PV exists in the cluster before attempting to create
 			// a volume from the snapshot, in order to avoid orphaned volumes (GH #609)
-			_, err := resourceClient.Get(name, metav1.GetOptions{})
+			shouldRestoreSnapshot, err := ctx.shouldRestore(name, resourceClient)
+
+			if err != nil {
+				addToResult(&errs, namespace, errors.Wrapf(err, "error waiting on in-cluster persistentvolume %s", name))
+				continue
+			}
 
 			// PV's existence will be recorded later. Just skip the volume restore logic.
-			if apierrors.IsNotFound(err) {
+			if shouldRestoreSnapshot {
 				// restore the PV from snapshot (if applicable)
 				updatedObj, err := ctx.pvRestorer.executePVAction(obj)
 				if err != nil {
@@ -721,7 +828,7 @@ func (ctx *context) restoreResource(resource, namespace, resourcePath string) (a
 
 						if _, err := waitForReady(resourceWatch.ResultChan(), name, isPVReady, time.Minute, ctx.log); err != nil {
 							ctx.log.Warnf("Timeout reached waiting for persistent volume %s to become ready", name)
-							addArkError(&warnings, fmt.Errorf("timeout reached waiting for persistent volume %s to become ready", name))
+							addVeleroError(&warnings, fmt.Errorf("timeout reached waiting for persistent volume %s to become ready", name))
 						}
 					}()
 				}
@@ -793,7 +900,7 @@ func (ctx *context) restoreResource(resource, namespace, resourcePath string) (a
 		// and which backup they came from
 		addRestoreLabels(obj, ctx.restore.Name, ctx.restore.Spec.BackupName)
 
-		ctx.log.Infof("Restoring %s: %v", obj.GroupVersionKind().Kind, name)
+		ctx.log.Infof("Attempting to restore %s: %v", obj.GroupVersionKind().Kind, name)
 		createdObj, restoreErr := resourceClient.Create(obj)
 		if apierrors.IsAlreadyExists(restoreErr) {
 			fromCluster, err := resourceClient.Get(name, metav1.GetOptions{})
@@ -815,34 +922,36 @@ func (ctx *context) restoreResource(resource, namespace, resourcePath string) (a
 			labels := obj.GetLabels()
 			addRestoreLabels(fromCluster, labels[api.RestoreNameLabel], labels[api.BackupNameLabel])
 
-			if !equality.Semantic.DeepEqual(fromCluster, obj) {
+			if equality.Semantic.DeepEqual(fromCluster, obj) {
+				ctx.log.Infof("Skipping restore of %s: %v because it already exists in the cluster and is unchanged from the backed up version", obj.GroupVersionKind().Kind, name)
+			} else {
 				switch groupResource {
 				case kuberesource.ServiceAccounts:
 					desired, err := mergeServiceAccounts(fromCluster, obj)
 					if err != nil {
 						ctx.log.Infof("error merging secrets for ServiceAccount %s: %v", kube.NamespaceAndName(obj), err)
 						addToResult(&warnings, namespace, err)
-						continue
+						break
 					}
 
 					patchBytes, err := generatePatch(fromCluster, desired)
 					if err != nil {
 						ctx.log.Infof("error generating patch for ServiceAccount %s: %v", kube.NamespaceAndName(obj), err)
 						addToResult(&warnings, namespace, err)
-						continue
+						break
 					}
 
 					if patchBytes == nil {
 						// In-cluster and desired state are the same, so move on to the next item
-						continue
+						break
 					}
 
 					_, err = resourceClient.Patch(name, patchBytes)
 					if err != nil {
 						addToResult(&warnings, namespace, err)
-					} else {
-						ctx.log.Infof("ServiceAccount %s successfully updated", kube.NamespaceAndName(obj))
+						break
 					}
+					ctx.log.Infof("ServiceAccount %s successfully updated", kube.NamespaceAndName(obj))
 				default:
 					e := errors.Errorf("not restored: %s and is different from backed up version.", restoreErr)
 					addToResult(&warnings, namespace, e)
