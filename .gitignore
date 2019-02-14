@@ -27,8 +27,7 @@ _testmain.go
 
 debug
 
-/ark
-/ark-restic-restore-helper
+/velero
 .idea/
 
 .container-*

@@ -32,17 +32,17 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	kuberrs "k8s.io/apimachinery/pkg/util/errors"
 
-	api "github.com/heptio/ark/pkg/apis/ark/v1"
-	"github.com/heptio/ark/pkg/client"
-	"github.com/heptio/ark/pkg/cloudprovider"
-	"github.com/heptio/ark/pkg/discovery"
-	"github.com/heptio/ark/pkg/podexec"
-	"github.com/heptio/ark/pkg/restic"
-	"github.com/heptio/ark/pkg/util/collections"
-	kubeutil "github.com/heptio/ark/pkg/util/kube"
+	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/client"
+	"github.com/heptio/velero/pkg/cloudprovider"
+	"github.com/heptio/velero/pkg/discovery"
+	"github.com/heptio/velero/pkg/podexec"
+	"github.com/heptio/velero/pkg/restic"
+	"github.com/heptio/velero/pkg/util/collections"
+	kubeutil "github.com/heptio/velero/pkg/util/kube"
 )
 
-// BackupVersion is the current backup version for Ark.
+// BackupVersion is the current backup version for Velero.
 const BackupVersion = 1
 
 // Backupper performs backups.
@@ -308,7 +308,7 @@ func (kb *kubernetesBackupper) writeBackupVersion(tw *tar.Writer) error {
 		Name:     versionFile,
 		Size:     int64(len(versionString)),
 		Typeflag: tar.TypeReg,
-		Mode:     0644,
+		Mode:     0755,
 		ModTime:  time.Now(),
 	}
 	if err := tw.WriteHeader(hdr); err != nil {

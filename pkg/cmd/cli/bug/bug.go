@@ -30,18 +30,18 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/heptio/ark/pkg/buildinfo"
-	"github.com/heptio/ark/pkg/cmd"
+	"github.com/heptio/velero/pkg/buildinfo"
+	"github.com/heptio/velero/pkg/cmd"
 )
 
 const (
 	// kubectlTimeout is how long we wait in seconds for `kubectl version`
 	// before killing the process
 	kubectlTimeout = 5 * time.Second
-	issueURL       = "https://github.com/heptio/ark/issues/new"
+	issueURL       = "https://github.com/heptio/velero/issues/new"
 	// IssueTemplate is used to generate .github/ISSUE_TEMPLATE/bug_report.md
 	// as well as the initial text that's place in a new Github issue as
-	// the result of running `ark bug`.
+	// the result of running `velero bug`.
 	IssueTemplate = `---
 name: Bug report
 about: Tell us about a problem you are experiencing
@@ -71,7 +71,7 @@ about: Tell us about a problem you are experiencing
 
 **Environment:**
 
-- Ark version (use ` + "`ark version`" + `):{{.ArkVersion}} {{.GitCommit}}
+- Velero version (use ` + "`ark version`" + `):{{.VeleroVersion}} {{.GitCommit}}
 - Kubernetes version (use ` + "`kubectl version`" + `): 
 {{- if .KubectlVersion}}
 ` + "```" + `
@@ -89,8 +89,8 @@ about: Tell us about a problem you are experiencing
 func NewCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "bug",
-		Short: "Report an Ark bug",
-		Long:  "Open a browser window to report an Ark bug",
+		Short: "Report a Velero bug",
+		Long:  "Open a browser window to report a Velero bug",
 		Run: func(c *cobra.Command, args []string) {
 			kubectlVersion, err := getKubectlVersion()
 			if err != nil {
@@ -106,8 +106,8 @@ func NewCommand() *cobra.Command {
 	return c
 }
 
-type ArkBugInfo struct {
-	ArkVersion     string
+type VeleroBugInfo struct {
+	VeleroVersion  string
 	GitCommit      string
 	RuntimeOS      string
 	RuntimeArch    string
@@ -158,9 +158,9 @@ func getKubectlVersion() (string, error) {
 	return kubectlVersion, nil
 }
 
-func newBugInfo(kubectlVersion string) *ArkBugInfo {
-	return &ArkBugInfo{
-		ArkVersion:     buildinfo.Version,
+func newBugInfo(kubectlVersion string) *VeleroBugInfo {
+	return &VeleroBugInfo{
+		VeleroVersion:  buildinfo.Version,
 		GitCommit:      buildinfo.FormattedGitSHA(),
 		RuntimeOS:      runtime.GOOS,
 		RuntimeArch:    runtime.GOARCH,
@@ -168,8 +168,8 @@ func newBugInfo(kubectlVersion string) *ArkBugInfo {
 }
 
 // renderToString renders IssueTemplate to a string using the
-// supplied *ArkBugInfo
-func renderToString(bugInfo *ArkBugInfo) (string, error) {
+// supplied *VeleroBugInfo
+func renderToString(bugInfo *VeleroBugInfo) (string, error) {
 	outputTemplate, err := template.New("ghissue").Parse(IssueTemplate)
 	if err != nil {
 		return "", err
@@ -193,10 +193,10 @@ func showIssueInBrowser(body string) error {
 		if cmdExistsOnPath("xdg-open") {
 			return exec.Command("xdg-open", url).Start()
 		}
-		return fmt.Errorf("ark can't open a browser window using the command '%s'", "xdg-open")
+		return fmt.Errorf("velero can't open a browser window using the command '%s'", "xdg-open")
 	case "windows":
 		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 	default:
-		return fmt.Errorf("ark can't open a browser window on platform %s", runtime.GOOS)
+		return fmt.Errorf("velero can't open a browser window on platform %s", runtime.GOOS)
 	}
 }
