@@ -33,6 +33,4 @@ RUN apk add --no-cache --update ca-certificates && \
     chmod +x /restic && \
     mv /restic /usr/bin/restic
 
-USER nobody
-
 ENTRYPOINT ["/velero"]
