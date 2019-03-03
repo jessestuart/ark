@@ -2,7 +2,7 @@
 # Build stage.
 # ==================
 ARG target
-FROM golang:1.11 as builder
+FROM golang:1.12 as builder
 
 ARG goarch
 ENV GOARCH $goarch
@@ -32,7 +32,5 @@ RUN apk add --no-cache --update ca-certificates && \
     bunzip2 restic.bz2 && \
     chmod +x /restic && \
     mv /restic /usr/bin/restic
-
-USER nobody
 
 ENTRYPOINT ["/velero"]
