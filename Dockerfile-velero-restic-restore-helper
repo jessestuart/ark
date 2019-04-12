@@ -1,4 +1,4 @@
-# Copyright 2018 the Velero contributors.
+# Copyright 2018, 2019 the Velero contributors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM arm64v8/alpine:3.7
+ARG target
 
+FROM $target/golang:1.12-alpine
+
+RUN apk add --no-cache curl
 COPY qemu-* /usr/bin/
 
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
-# TODO
-ADD /bin/linux/amd64/velero-restic-restore-helper .
+COPY /bin/linux/amd64/velero-restic-restore-helper /velero-restic-restore-helper
 
 USER nobody:nobody
 
-ENTRYPOINT [ "/velero-restic-restore-helper" ]
+ENTRYPOINT ["/velero-restic-restore-helper"]
