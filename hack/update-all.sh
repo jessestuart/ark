@@ -19,7 +19,7 @@ HACK_DIR=$(dirname "${BASH_SOURCE}")
 echo "Running all update scripts"
 
 for f in ${HACK_DIR}/update-*.sh; do
-  if [[ $f = "${HACK_DIR}/update-all.sh" ]]; then
+  if [[ $f == "${HACK_DIR}/update-all.sh" ]]; then
     continue
   fi
   $f
