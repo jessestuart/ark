@@ -14,14 +14,29 @@
 
 ARG target
 
-FROM $target/golang:1.12-alpine
+FROM $target/golang:1.12 as builder
 
-RUN apk add --no-cache curl
+ARG goarch
+ENV GOOS linux
+ENV GOARCH $goarch
+ENV GOPATH /go
+ENV CGO_ENABLED 0
+ENV PATH "$GOPATH/bin:$PATH"
+ENV GIT_TERMINAL_PROMPT 1
+
 COPY qemu-* /usr/bin/
 
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
-COPY /bin/linux/amd64/velero-restic-restore-helper /velero-restic-restore-helper
+ENV image heptio/velero
+WORKDIR /go/src/github.com/${image}
+RUN git clone https://github.com/${image} . && \
+  go build cmd/velero-restic-restore-helper/main.go && \
+  mv ./main /velero-restic-restore-helper
+
+FROM $target/alpine
+
+COPY --from=builder /velero-restic-restore-helper /velero-restic-restore-helper
 
 USER nobody:nobody
 
