@@ -14,7 +14,7 @@
 
 ARG target
 
-FROM $target/golang:1.12 as builder
+FROM golang:1.12 as builder
 
 ARG goarch
 ENV GOOS linux
@@ -23,8 +23,6 @@ ENV GOPATH /go
 ENV CGO_ENABLED 0
 ENV PATH "$GOPATH/bin:$PATH"
 ENV GIT_TERMINAL_PROMPT 1
-
-COPY qemu-* /usr/bin/
 
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
@@ -35,6 +33,8 @@ RUN git clone https://github.com/${image} . && \
   mv ./main /velero-restic-restore-helper
 
 FROM $target/alpine
+
+COPY qemu-* /usr/bin/
 
 COPY --from=builder /velero-restic-restore-helper /velero-restic-restore-helper
 

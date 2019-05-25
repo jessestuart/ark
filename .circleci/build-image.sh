@@ -1,6 +1,6 @@
 #!/bin/bash
 
-export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
 
 # Login to Docker Hub.
 echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
@@ -26,8 +26,7 @@ fi
 cp -f $DIR/Dockerfile .
 docker build -t ${IMAGE_ID} \
   --build-arg target=$TARGET \
-  --build-arg goarch=$GOARCH \
-  --build-arg image=${GITHUB_REPO} .
+  --build-arg goarch=$GOARCH .
 
 # Push push push
 docker push ${IMAGE_ID}
@@ -40,13 +39,15 @@ fi
 # Secondary velero-restic-restore-helper image.
 # =======================================================
 
-export IMAGE=velero-restic-restore-helper
-export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+IMAGE=velero-restic-restore-helper
+IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+echo "Building image with ID: $IMAGE_ID"
 cp -f $DIR/Dockerfile-velero-restic-restore-helper .
-docker build -t $IMAGE_ID \
+docker build \
+  -t $IMAGE_ID \
+  -f Dockerfile-velero-restic-restore-helper \
   --build-arg target=$TARGET \
-  --build-arg goarch=$GOARCH \
-  --build-arg image=$GITHUB_REPO .
+  --build-arg goarch=$GOARCH .
 
 # Push push push
 docker push $IMAGE_ID
