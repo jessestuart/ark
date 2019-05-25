@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,103 +20,114 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	batchv1api "k8s.io/api/batch/v1"
+	corev1api "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/heptio/velero/pkg/plugin/velero"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
 func TestJobActionExecute(t *testing.T) {
 	tests := []struct {
 		name        string
-		obj         runtime.Unstructured
+		obj         batchv1api.Job
 		expectedErr bool
-		expectedRes runtime.Unstructured
+		expectedRes batchv1api.Job
 	}{
 		{
 			name: "missing spec.selector and/or spec.template should not error",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpec().
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpec().
-				Unstructured,
+			obj: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+			},
+			expectedRes: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+			},
 		},
 		{
 			name: "missing spec.selector.matchLabels should not error",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpecField("selector", map[string]interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpecField("selector", map[string]interface{}{}).
-				Unstructured,
+			obj: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Selector: new(metav1.LabelSelector),
+				},
+			},
+			expectedRes: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Selector: new(metav1.LabelSelector),
+				},
+			},
 		},
 		{
 			name: "spec.selector.matchLabels[controller-uid] is removed",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpecField("selector", map[string]interface{}{
-					"matchLabels": map[string]interface{}{
-						"controller-uid": "foo",
-						"hello":          "world",
-					},
-				}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpecField("selector", map[string]interface{}{
-					"matchLabels": map[string]interface{}{
-						"hello": "world",
-					},
-				}).
-				Unstructured,
-		},
-		{
-			name: "missing spec.template.metadata should not error",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{}).
-				Unstructured,
-		},
-		{
-			name: "missing spec.template.metadata.labels should not error",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{
-					"metadata": map[string]interface{}{},
-				}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{
-					"metadata": map[string]interface{}{},
-				}).
-				Unstructured,
-		},
-		{
-			name: "spec.template.metadata.labels[controller-uid] is removed",
-			obj: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{
-					"metadata": map[string]interface{}{
-						"labels": map[string]interface{}{
+			obj: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
 							"controller-uid": "foo",
 							"hello":          "world",
 						},
 					},
-				}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("job-1").
-				WithSpecField("template", map[string]interface{}{
-					"metadata": map[string]interface{}{
-						"labels": map[string]interface{}{
+				},
+			},
+			expectedRes: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
 							"hello": "world",
 						},
 					},
-				}).
-				Unstructured,
+				},
+			},
+		},
+		{
+			name: "missing spec.template.metadata.labels should not error",
+			obj: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Template: corev1api.PodTemplateSpec{},
+				},
+			},
+			expectedRes: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Template: corev1api.PodTemplateSpec{},
+				},
+			},
+		},
+		{
+			name: "spec.template.metadata.labels[controller-uid] is removed",
+			obj: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Template: corev1api.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"controller-uid": "foo",
+								"hello":          "world",
+							},
+						},
+					},
+				},
+			},
+			expectedRes: batchv1api.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: "job-1"},
+				Spec: batchv1api.JobSpec{
+					Template: corev1api.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"hello": "world",
+							},
+						},
+					},
+				},
+			},
 		},
 	}
 
@@ -124,10 +135,20 @@ func TestJobActionExecute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			action := NewJobAction(velerotest.NewLogger())
 
-			res, _, err := action.Execute(test.obj, nil)
+			unstructuredJob, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&test.obj)
+			require.NoError(t, err)
+
+			res, err := action.Execute(&velero.RestoreItemActionExecuteInput{
+				Item:           &unstructured.Unstructured{Object: unstructuredJob},
+				ItemFromBackup: &unstructured.Unstructured{Object: unstructuredJob},
+				Restore:        nil,
+			})
 
 			if assert.Equal(t, test.expectedErr, err != nil) {
-				assert.Equal(t, test.expectedRes, res)
+				var job batchv1api.Job
+				require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(res.UpdatedItem.UnstructuredContent(), &job))
+
+				assert.Equal(t, test.expectedRes, job)
 			}
 		})
 	}

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,9 +21,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1api "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/heptio/velero/pkg/plugin/velero"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
@@ -46,136 +50,221 @@ func TestServiceActionExecute(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		obj         runtime.Unstructured
+		obj         corev1api.Service
 		expectedErr bool
-		expectedRes runtime.Unstructured
+		expectedRes corev1api.Service
 	}{
 		{
-			name:        "no spec should error",
-			obj:         NewTestUnstructured().WithName("svc-1").Unstructured,
-			expectedErr: true,
-		},
-		{
-			name:        "no spec ports should error",
-			obj:         NewTestUnstructured().WithName("svc-1").WithSpec().Unstructured,
-			expectedErr: true,
-		},
-		{
-			name:        "clusterIP (only) should be deleted from spec",
-			obj:         NewTestUnstructured().WithName("svc-1").WithSpec("clusterIP", "foo").WithSpecField("ports", []interface{}{}).Unstructured,
+			name: "clusterIP (only) should be deleted from spec",
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					ClusterIP:      "should-be-removed",
+					LoadBalancerIP: "should-be-kept",
+				},
+			},
 			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").WithSpec("foo").WithSpecField("ports", []interface{}{}).Unstructured,
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					LoadBalancerIP: "should-be-kept",
+				},
+			},
 		},
 		{
-			name:        "headless clusterIP should not be deleted from spec",
-			obj:         NewTestUnstructured().WithName("svc-1").WithSpecField("clusterIP", "None").WithSpecField("ports", []interface{}{}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").WithSpecField("clusterIP", "None").WithSpecField("ports", []interface{}{}).Unstructured,
+			name: "headless clusterIP should not be deleted from spec",
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					ClusterIP: "None",
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					ClusterIP: "None",
+				},
+			},
 		},
 		{
 			name: "nodePort (only) should be deleted from all spec.ports",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{"nodePort": ""},
-					map[string]interface{}{"nodePort": "", "foo": "bar"},
-				}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{},
-					map[string]interface{}{"foo": "bar"},
-				}).Unstructured,
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							Port:     32000,
+							NodePort: 32000,
+						},
+						{
+							Port:     32001,
+							NodePort: 32001,
+						},
+					},
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							Port: 32000,
+						},
+						{
+							Port: 32001,
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "unnamed nodePort should be deleted when missing in annotation",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{"nodePort": 8080},
-				}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{},
-				}).Unstructured,
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(),
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							NodePort: 8080,
+						},
+					},
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(),
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{},
+					},
+				},
+			},
 		},
 		{
 			name: "unnamed nodePort should be preserved when specified in annotation",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{
-						"nodePort": 8080,
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{NodePort: 8080}),
 					},
-				}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{
-						"nodePort": 8080,
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							NodePort: 8080,
+						},
 					},
-				}).Unstructured,
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{NodePort: 8080}),
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							NodePort: 8080,
+						},
+					},
+				},
+			},
 		},
 		{
 			name: "unnamed nodePort should be deleted when named nodePort specified in annotation",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{
-						"nodePort": 8080,
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
 					},
-				}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{},
-				}).Unstructured,
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							NodePort: 8080,
+						},
+					},
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
+					},
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{},
+					},
+				},
+			},
 		},
 		{
 			name: "named nodePort should be preserved when specified in annotation",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{
-						"name":     "http",
-						"nodePort": 8080,
+			obj: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
 					},
-					map[string]interface{}{
-						"name":     "admin",
-						"nodePort": 9090,
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							Name:     "http",
+							NodePort: 8080,
+						},
+						{
+							Name:     "admin",
+							NodePort: 9090,
+						},
 					},
-				}).Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithAnnotationValues(map[string]string{
-					annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
-				}).
-				WithSpecField("ports", []interface{}{
-					map[string]interface{}{
-						"name":     "http",
-						"nodePort": 8080,
+				},
+			},
+			expectedRes: corev1api.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "svc-1",
+					Annotations: map[string]string{
+						annotationLastAppliedConfig: svcJSON(corev1api.ServicePort{Name: "http", NodePort: 8080}),
 					},
-					map[string]interface{}{
-						"name": "admin",
+				},
+				Spec: corev1api.ServiceSpec{
+					Ports: []corev1api.ServicePort{
+						{
+							Name:     "http",
+							NodePort: 8080,
+						},
+						{
+							Name: "admin",
+						},
 					},
-				}).Unstructured,
+				},
+			},
 		},
 	}
 
@@ -183,10 +272,20 @@ func TestServiceActionExecute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			action := NewServiceAction(velerotest.NewLogger())
 
-			res, _, err := action.Execute(test.obj, nil)
+			unstructuredSvc, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&test.obj)
+			require.NoError(t, err)
 
-			if assert.Equal(t, test.expectedErr, err != nil) {
-				assert.Equal(t, test.expectedRes, res)
+			res, err := action.Execute(&velero.RestoreItemActionExecuteInput{
+				Item:           &unstructured.Unstructured{Object: unstructuredSvc},
+				ItemFromBackup: &unstructured.Unstructured{Object: unstructuredSvc},
+				Restore:        nil,
+			})
+
+			if assert.Equal(t, test.expectedErr, err != nil) && !test.expectedErr {
+				var svc corev1api.Service
+				require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(res.UpdatedItem.UnstructuredContent(), &svc))
+
+				assert.Equal(t, test.expectedRes, svc)
 			}
 		})
 	}

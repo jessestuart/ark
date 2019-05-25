@@ -1,16 +1,10 @@
-# Velero
+![100]
 
-![](/docs/img/velero.png)
-
-[![Build Status][1]][2] <a href="https://zenhub.com"><img src="https://raw.githubusercontent.com/ZenHubIO/support/master/zenhub-badge.png"></a>
-
-## Heptio Ark is now Velero!
-
-#### We're working on our first Velero release and instructions for migrating your Ark deployments to Velero. Stay tuned!
+[![Build Status][1]][2]
 
 ## Overview
 
-Velero gives you tools to back up and restore your Kubernetes cluster resources and persistent volumes. Velero lets you:
+Velero (formerly Heptio Ark) gives you tools to back up and restore your Kubernetes cluster resources and persistent volumes. Velero lets you:
 
 * Take backups of your cluster and restore in case of loss.
 * Copy cluster resources to other clusters.
@@ -23,10 +17,19 @@ Velero consists of:
 
 You can run Velero in clusters on a cloud provider or on-premises. For detailed information, see [Compatible Storage Providers][99].
 
+## Installation
+
+We strongly recommend that you use an [official release][6] of Velero. The tarballs for each release contain the
+command-line client **and** version-specific sample YAML files for deploying Velero to your cluster. 
+Follow the instructions under the **Install** section of [our documentation][29] to get started.
+
+_The code and sample YAML files in the master branch of the Velero repository are under active development and are not guaranteed to be stable. Use them at your own risk!_
 
 ## More information
 
-[The documentation][29] provides a getting started guide, plus information about building from source, architecture, extending Velero, and more.
+[The documentation][29] provides a getting started guide, plus information about building from source, architecture, extending Velero, and more. 
+
+Please use the version selector at the top of the site to ensure you are using the appropriate documentation for your version of Velero.
 
 ## Troubleshooting
 
@@ -75,3 +78,4 @@ See [the list of releases][6] to find out about feature changes.
 [30]: /docs/troubleshooting.md
 
 [99]: /docs/support-matrix.md
+[100]: /docs/img/velero.png

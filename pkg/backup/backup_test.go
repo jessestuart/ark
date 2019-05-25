@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ import (
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/discovery"
+	"github.com/heptio/velero/pkg/plugin/velero"
 	"github.com/heptio/velero/pkg/podexec"
 	"github.com/heptio/velero/pkg/restic"
 	"github.com/heptio/velero/pkg/util/collections"
@@ -54,19 +55,19 @@ var (
 )
 
 type fakeAction struct {
-	selector        ResourceSelector
+	selector        velero.ResourceSelector
 	ids             []string
 	backups         []v1.Backup
-	additionalItems []ResourceIdentifier
+	additionalItems []velero.ResourceIdentifier
 }
 
-var _ ItemAction = &fakeAction{}
+var _ velero.BackupItemAction = &fakeAction{}
 
 func newFakeAction(resource string) *fakeAction {
 	return (&fakeAction{}).ForResource(resource)
 }
 
-func (a *fakeAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []ResourceIdentifier, error) {
+func (a *fakeAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, error) {
 	metadata, err := meta.Accessor(item)
 	if err != nil {
 		return item, a.additionalItems, err
@@ -77,7 +78,7 @@ func (a *fakeAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runt
 	return item, a.additionalItems, nil
 }
 
-func (a *fakeAction) AppliesTo() (ResourceSelector, error) {
+func (a *fakeAction) AppliesTo() (velero.ResourceSelector, error) {
 	return a.selector, nil
 }
 
@@ -89,34 +90,34 @@ func (a *fakeAction) ForResource(resource string) *fakeAction {
 func TestResolveActions(t *testing.T) {
 	tests := []struct {
 		name                string
-		input               []ItemAction
+		input               []velero.BackupItemAction
 		expected            []resolvedAction
 		resourcesWithErrors []string
 		expectError         bool
 	}{
 		{
 			name:     "empty input",
-			input:    []ItemAction{},
+			input:    []velero.BackupItemAction{},
 			expected: nil,
 		},
 		{
 			name:        "resolve error",
-			input:       []ItemAction{&fakeAction{selector: ResourceSelector{LabelSelector: "=invalid-selector"}}},
+			input:       []velero.BackupItemAction{&fakeAction{selector: velero.ResourceSelector{LabelSelector: "=invalid-selector"}}},
 			expected:    nil,
 			expectError: true,
 		},
 		{
 			name:  "resolved",
-			input: []ItemAction{newFakeAction("foo"), newFakeAction("bar")},
+			input: []velero.BackupItemAction{newFakeAction("foo"), newFakeAction("bar")},
 			expected: []resolvedAction{
 				{
-					ItemAction:                newFakeAction("foo"),
+					BackupItemAction:          newFakeAction("foo"),
 					resourceIncludesExcludes:  collections.NewIncludesExcludes().Includes("foodies.somegroup"),
 					namespaceIncludesExcludes: collections.NewIncludesExcludes(),
 					selector:                  labels.Everything(),
 				},
 				{
-					ItemAction:                newFakeAction("bar"),
+					BackupItemAction:          newFakeAction("bar"),
 					resourceIncludesExcludes:  collections.NewIncludesExcludes().Includes("barnacles.anothergroup"),
 					namespaceIncludesExcludes: collections.NewIncludesExcludes(),
 					selector:                  labels.Everything(),
@@ -372,12 +373,64 @@ func TestBackup(t *testing.T) {
 	tests := []struct {
 		name               string
 		backup             *v1.Backup
+		actions            []velero.BackupItemAction
 		expectedNamespaces *collections.IncludesExcludes
 		expectedResources  *collections.IncludesExcludes
 		expectedHooks      []resourceHook
 		backupGroupErrors  map[*metav1.APIResourceList]error
 		expectedError      error
 	}{
+		{
+			name: "error resolving actions returns an error",
+			backup: &v1.Backup{
+				Spec: v1.BackupSpec{
+					// cm - shortcut in legacy api group
+					// csr - shortcut in certificates.k8s.io api group
+					// roles - fully qualified in rbac.authorization.k8s.io api group
+					IncludedResources:  []string{"cm", "csr", "roles"},
+					IncludedNamespaces: []string{"a", "b"},
+					ExcludedNamespaces: []string{"c", "d"},
+				},
+			},
+			actions:            []velero.BackupItemAction{new(appliesToErrorAction)},
+			expectedNamespaces: collections.NewIncludesExcludes().Includes("a", "b").Excludes("c", "d"),
+			expectedResources:  collections.NewIncludesExcludes().Includes("configmaps", "certificatesigningrequests.certificates.k8s.io", "roles.rbac.authorization.k8s.io"),
+			expectedHooks:      []resourceHook{},
+			expectedError:      errors.New("error calling AppliesTo"),
+		},
+		{
+			name: "error resolving hooks returns an error",
+			backup: &v1.Backup{
+				Spec: v1.BackupSpec{
+					// cm - shortcut in legacy api group
+					// csr - shortcut in certificates.k8s.io api group
+					// roles - fully qualified in rbac.authorization.k8s.io api group
+					IncludedResources:  []string{"cm", "csr", "roles"},
+					IncludedNamespaces: []string{"a", "b"},
+					ExcludedNamespaces: []string{"c", "d"},
+					Hooks: v1.BackupHooks{
+						Resources: []v1.BackupResourceHookSpec{
+							{
+								Name: "hook-with-invalid-label-selector",
+								LabelSelector: &metav1.LabelSelector{
+									MatchExpressions: []metav1.LabelSelectorRequirement{
+										{
+											Key:      "foo",
+											Operator: metav1.LabelSelectorOperator("nonexistent-operator"),
+											Values:   []string{"bar"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedNamespaces: collections.NewIncludesExcludes().Includes("a", "b").Excludes("c", "d"),
+			expectedResources:  collections.NewIncludesExcludes().Includes("configmaps", "certificatesigningrequests.certificates.k8s.io", "roles.rbac.authorization.k8s.io"),
+			expectedHooks:      []resourceHook{},
+			expectedError:      errors.New("\"nonexistent-operator\" is not a valid pod selector operator"),
+		},
 		{
 			name: "happy path, no actions, no hooks, no errors",
 			backup: &v1.Backup{
@@ -410,7 +463,7 @@ func TestBackup(t *testing.T) {
 				certificatesGroup: nil,
 				rbacGroup:         errors.New("rbac error"),
 			},
-			expectedError: errors.New("[v1 error, rbac error]"),
+			expectedError: nil,
 		},
 		{
 			name: "hooks",
@@ -427,7 +480,7 @@ func TestBackup(t *testing.T) {
 								LabelSelector: &metav1.LabelSelector{
 									MatchLabels: map[string]string{"1": "2"},
 								},
-								Hooks: []v1.BackupResourceHook{
+								PreHooks: []v1.BackupResourceHook{
 									{
 										Exec: &v1.ExecHook{
 											Command: []string{"ls", "/tmp"},
@@ -507,8 +560,8 @@ func TestBackup(t *testing.T) {
 				mock.Anything, // tarWriter
 				mock.Anything, // restic backupper
 				mock.Anything, // pvc snapshot tracker
-				mock.Anything, // block store getter
-			).Return(groupBackupper)
+				mock.Anything, // volume snapshotter getter
+			).Maybe().Return(groupBackupper)
 
 			for group, err := range test.backupGroupErrors {
 				groupBackupper.On("backupGroup", group).Return(err)
@@ -521,7 +574,7 @@ func TestBackup(t *testing.T) {
 				groupBackupperFactory: groupBackupperFactory,
 			}
 
-			err := kb.Backup(logging.DefaultLogger(logrus.DebugLevel), req, new(bytes.Buffer), nil, nil)
+			err := kb.Backup(logging.DefaultLogger(logrus.DebugLevel), req, new(bytes.Buffer), test.actions, nil)
 
 			assert.Equal(t, test.expectedNamespaces, req.NamespaceIncludesExcludes)
 			assert.Equal(t, test.expectedResources, req.ResourceIncludesExcludes)
@@ -535,6 +588,18 @@ func TestBackup(t *testing.T) {
 
 		})
 	}
+}
+
+// appliesToErrorAction is a backup item action that always returns
+// an error when AppliesTo() is called.
+type appliesToErrorAction struct{}
+
+func (a *appliesToErrorAction) AppliesTo() (velero.ResourceSelector, error) {
+	return velero.ResourceSelector{}, errors.New("error calling AppliesTo")
+}
+
+func (a *appliesToErrorAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, error) {
+	panic("not implemented")
 }
 
 func TestBackupUsesNewCohabitatingResourcesForEachBackup(t *testing.T) {
@@ -612,7 +677,7 @@ func (f *mockGroupBackupperFactory) newGroupBackupper(
 	tarWriter tarWriter,
 	resticBackupper restic.Backupper,
 	resticSnapshotTracker *pvcSnapshotTracker,
-	blockStoreGetter BlockStoreGetter,
+	volumeSnapshotterGetter VolumeSnapshotterGetter,
 ) groupBackupper {
 	args := f.Called(
 		log,
@@ -625,7 +690,7 @@ func (f *mockGroupBackupperFactory) newGroupBackupper(
 		tarWriter,
 		resticBackupper,
 		resticSnapshotTracker,
-		blockStoreGetter,
+		volumeSnapshotterGetter,
 	)
 	return args.Get(0).(groupBackupper)
 }
@@ -651,68 +716,6 @@ func TestGetResourceHook(t *testing.T) {
 		hookSpec v1.BackupResourceHookSpec
 		expected resourceHook
 	}{
-		{
-			name: "PreHooks take priority over Hooks",
-			hookSpec: v1.BackupResourceHookSpec{
-				Name: "spec1",
-				PreHooks: []v1.BackupResourceHook{
-					{
-						Exec: &v1.ExecHook{
-							Container: "a",
-							Command:   []string{"b"},
-						},
-					},
-				},
-				Hooks: []v1.BackupResourceHook{
-					{
-						Exec: &v1.ExecHook{
-							Container: "c",
-							Command:   []string{"d"},
-						},
-					},
-				},
-			},
-			expected: resourceHook{
-				name:       "spec1",
-				namespaces: collections.NewIncludesExcludes(),
-				resources:  collections.NewIncludesExcludes(),
-				pre: []v1.BackupResourceHook{
-					{
-						Exec: &v1.ExecHook{
-							Container: "a",
-							Command:   []string{"b"},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "Use Hooks if PreHooks isn't set",
-			hookSpec: v1.BackupResourceHookSpec{
-				Name: "spec1",
-				Hooks: []v1.BackupResourceHook{
-					{
-						Exec: &v1.ExecHook{
-							Container: "a",
-							Command:   []string{"b"},
-						},
-					},
-				},
-			},
-			expected: resourceHook{
-				name:       "spec1",
-				namespaces: collections.NewIncludesExcludes(),
-				resources:  collections.NewIncludesExcludes(),
-				pre: []v1.BackupResourceHook{
-					{
-						Exec: &v1.ExecHook{
-							Container: "a",
-							Command:   []string{"b"},
-						},
-					},
-				},
-			},
-		},
 		{
 			name: "Full test",
 			hookSpec: v1.BackupResourceHookSpec{

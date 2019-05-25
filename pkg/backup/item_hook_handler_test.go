@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -593,37 +593,6 @@ func TestGetPodExecHookFromAnnotations(t *testing.T) {
 				expectedHook: &v1.ExecHook{
 					Container: "some-container",
 					Command:   []string{"/usr/bin/foo"},
-				},
-			},
-			{
-				name: "legacy ark-based annotations are supported",
-				annotations: map[string]string{
-					phasedKey(phase, arkPodBackupHookContainerAnnotationKey): "some-container",
-					phasedKey(phase, arkPodBackupHookCommandAnnotationKey):   "/usr/bin/foo",
-				},
-				expectedHook: &v1.ExecHook{
-					Container: "some-container",
-					Command:   []string{"/usr/bin/foo"},
-				},
-			},
-			{
-				name: "when both current and legacy ark-based annotations are specified, current takes precedence",
-				annotations: map[string]string{
-					phasedKey(phase, podBackupHookContainerAnnotationKey): "current-container",
-					phasedKey(phase, podBackupHookCommandAnnotationKey):   "/usr/bin/current",
-					phasedKey(phase, podBackupHookOnErrorAnnotationKey):   string(v1.HookErrorModeContinue),
-					phasedKey(phase, podBackupHookTimeoutAnnotationKey):   "10m",
-
-					phasedKey(phase, arkPodBackupHookContainerAnnotationKey): "legacy-container",
-					phasedKey(phase, arkPodBackupHookCommandAnnotationKey):   "/usr/bin/legacy",
-					phasedKey(phase, arkPodBackupHookOnErrorAnnotationKey):   string(v1.HookErrorModeFail),
-					phasedKey(phase, arkPodBackupHookTimeoutAnnotationKey):   "5m",
-				},
-				expectedHook: &v1.ExecHook{
-					Container: "current-container",
-					Command:   []string{"/usr/bin/current"},
-					OnError:   v1.HookErrorModeContinue,
-					Timeout:   metav1.Duration{Duration: 10 * time.Minute},
 				},
 			},
 		}

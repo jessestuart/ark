@@ -1,12 +1,11 @@
 # Restic Integration
 
-As of version 0.9.0, Velero has support for backing up and restoring Kubernetes volumes using a free open-source backup tool called 
-[restic][1].
+Velero has support for backing up and restoring Kubernetes volumes using a free open-source backup tool called [restic][1]. This support is considered beta quality. Please see the list of [limitations](#limitations) to understand if it currently fits your use case.
 
 Velero has always allowed you to take snapshots of persistent volumes as part of your backups if you’re using one of 
 the supported cloud providers’ block storage offerings (Amazon EBS Volumes, Azure Managed Disks, Google Persistent Disks). 
-Starting with version 0.6.0, we provide a plugin model that enables anyone to implement additional object and block storage 
-backends, outside the main Velero repository.
+We also provide a plugin model that enables anyone to implement additional object and block storage backends, outside the 
+main Velero repository.
 
 We integrated restic with Velero so that users have an out-of-the-box solution for backing up and restoring almost any type of Kubernetes
 volume*. This is a new capability for Velero, not a replacement for existing functionality. If you're running on AWS, and
@@ -23,27 +22,28 @@ cross-volume-type data migrations. Stay tuned as this evolves!
 
 ### Prerequisites
 
-- A working install of Velero version 0.10.0 or later. See [Set up Velero][2]
-- A local clone of [the latest release tag of the Velero repository][3]
 - Velero's restic integration requires the Kubernetes [MountPropagation feature][6], which is enabled by default in Kubernetes v1.10.0 and later.
-
 
 ### Instructions
 
-1. Ensure you've [downloaded & extracted the latest release][3].
+Ensure you've [downloaded latest release][3].
 
-1. In the Velero directory (i.e. where you extracted the release tarball), run the following to create new custom resource definitions:
+To install restic, use the `--use-restic` flag on the `velero install` command. See the [install overview][2] for more details.
 
-    ```bash
-    kubectl apply -f config/common/00-prereqs.yaml
-    ```
+   Please note: In RancherOS , the path is not `/var/lib/kubelet/pods` , rather it is `/opt/rke/var/lib/kubelet/pods`
+   thereby requires modifying the restic daemonset after installing.
 
-1. Run one of the following for your platform to create the daemonset:
+  ```yaml
+  hostPath:
+    path: /var/lib/kubelet/pods
+  ```
 
-    - AWS: `kubectl apply -f config/aws/20-restic-daemonset.yaml`
-    - Azure: `kubectl apply -f config/azure/20-restic-daemonset.yaml`
-    - GCP: `kubectl apply -f config/gcp/20-restic-daemonset.yaml`
-    - Minio: `kubectl apply -f config/minio/30-restic-daemonset.yaml`
+  to
+
+  ```yaml
+  hostPath:
+    path: /opt/rke/var/lib/kubelet/pods
+  ```
 
 You're now ready to use Velero with restic.
 
@@ -55,11 +55,11 @@ You're now ready to use Velero with restic.
     kubectl -n YOUR_POD_NAMESPACE annotate pod/YOUR_POD_NAME backup.velero.io/backup-volumes=YOUR_VOLUME_NAME_1,YOUR_VOLUME_NAME_2,...
     ```
 
-    where the volume names are the names of the volumes in the pod spec. 
-    
+    where the volume names are the names of the volumes in the pod spec.
+
     For example, for the following pod:
 
-    ```bash
+    ```yaml
     apiVersion: v1
     kind: Pod
     metadata:
@@ -83,13 +83,14 @@ You're now ready to use Velero with restic.
     ```
 
     You'd run:
+
     ```bash
     kubectl -n foo annotate pod/sample backup.velero.io/backup-volumes=pvc-volume,emptydir-volume
     ```
 
     This annotation can also be provided in a pod template spec if you use a controller to manage your pods.
 
-1. Take an Velero backup:
+1. Take a Velero backup:
 
     ```bash
     velero backup create NAME OPTIONS...
@@ -112,7 +113,7 @@ You're now ready to use Velero with restic.
     ```
 
 1. When the restore completes, view information about your pod volume restores:
-    
+
     ```bash
     velero restore describe YOUR_RESTORE_NAME
 
@@ -126,7 +127,43 @@ You're now ready to use Velero with restic.
 common encryption key for all restic repositories created by Velero. **This means that anyone who has access to your
 bucket can decrypt your restic backup data**. Make sure that you limit access to the restic bucket
 appropriately. We plan to implement full Velero backup encryption, including securing the restic encryption keys, in 
-a future release.   
+a future release.
+- The current Velero/restic integration relies on using pod names to associate restic backups with their parents. If a pod is restarted, such as with a Deployment, 
+the next restic backup taken will be treated as a completely new backup, not an incremental one.
+- Restic scans each file in a single thread. This means that large files (such as ones storing a database) will take a long time to scan for data deduplication, even if the actual 
+difference is small.
+
+## Customize Restore Helper Image
+
+Velero uses a helper init container when performing a restic restore. By default, the image for this container is `gcr.io/heptio-images/velero-restic-restore-helper:<VERSION>`,
+where `VERSION` matches the version/tag of the main Velero image. You can customize the image that is used for this helper by creating a ConfigMap in the Velero namespace with
+the alternate image. The ConfigMap must look like the following:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  # any name can be used; Velero uses the labels (below)
+  # to identify it rather than the name
+  name: restic-restore-action-config
+  # must be in the velero namespace
+  namespace: velero
+  # the below labels should be used verbatim in your
+  # ConfigMap.
+  labels:
+    # this value-less label identifies the ConfigMap as
+    # config for a plugin (i.e. the built-in restic restore
+    # item action plugin)
+    velero.io/plugin-config: ""
+    # this label identifies the name and kind of plugin
+    # that this ConfigMap is for.
+    velero.io/restic: RestoreItemAction
+data:
+  # "image" is the only configurable key. The value can either
+  # include a tag or not; if the tag is *not* included, the
+  # tag from the main Velero image will automatically be used.
+  image: myregistry.io/my-custom-helper-image[:OPTIONAL_TAG]
+```
 
 ## Troubleshooting
 

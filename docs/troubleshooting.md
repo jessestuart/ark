@@ -9,7 +9,7 @@ See also:
 
 ## General troubleshooting information
 
-In `velero` version >= `0.10.0`, you can use the `velero bug` command to open a [Github issue][4] by launching a browser window with some prepopulated values. Values included are OS, CPU architecture, `kubectl` client and server versions (if available) and the `velero` client version. This information isn't submitted to Github until you click the `Submit new issue` button in the Github UI, so feel free to add, remove or update whatever information you like.
+You can use the `velero bug` command to open a [Github issue][4] by launching a browser window with some prepopulated values. Values included are OS, CPU architecture, `kubectl` client and server versions (if available) and the `velero` client version. This information isn't submitted to Github until you click the `Submit new issue` button in the Github UI, so feel free to add, remove or update whatever information you like.
 
 Some general commands for troubleshooting that may be helpful:
 
@@ -41,7 +41,7 @@ kubectl edit deployment/velero -n velero
 
 ## Known issue with restoring LoadBalancer Service
 
-Because of how Kubernetes handles Service objects of `type=LoadBalancer`, when you restore these objects you might encounter an issue with changed values for Service UIDs. Kubernetes automatically generates the name of the cloud resource based on the Service UID, which is different when restored, resulting in a different name for the cloud load balancer. If the DNS CNAME for your application points to the DNS name of your cloud load balancer, you'll need to update the CNAME pointer when you perform an Velero restore.
+Because of how Kubernetes handles Service objects of `type=LoadBalancer`, when you restore these objects you might encounter an issue with changed values for Service UIDs. Kubernetes automatically generates the name of the cloud resource based on the Service UID, which is different when restored, resulting in a different name for the cloud load balancer. If the DNS CNAME for your application points to the DNS name of your cloud load balancer, you'll need to update the CNAME pointer when you perform a Velero restore.
 
 Alternatively, you might be able to use the Service's `spec.loadBalancerIP` field to keep connections valid, if your cloud provider supports this value. See [the Kubernetes documentation about Services of Type LoadBalancer](https://kubernetes.io/docs/concepts/services-networking/service/#loadbalancer).
 
@@ -49,8 +49,7 @@ Alternatively, you might be able to use the Service's `spec.loadBalancerIP` fiel
 
 ### Velero reports `custom resource not found` errors when starting up.
 
-Velero's server will not start if the required Custom Resource Definitions are not found in Kubernetes. Apply
-the `config/common/00-prereqs.yaml` file to create these definitions, then restart Velero.
+Velero's server will not start if the required Custom Resource Definitions are not found in Kubernetes. Run `velero install` again to install any missing custom resource definitions.
 
 ### `velero backup logs` returns a `SignatureDoesNotMatch` error
 
@@ -62,6 +61,11 @@ Here are some things to verify if you receive `SignatureDoesNotMatch` errors:
 
   * Make sure your S3-compatible layer is using [signature version 4][5] (such as Ceph RADOS v12.2.7)
   * For Ceph, try using a native Ceph account for credentials instead of external providers such as OpenStack Keystone
+
+## Velero (or a pod it was backing up) restarted during a backup and the backup is stuck InProgress
+
+Velero cannot currently resume backups that were interrupted. Backups stuck in the `InProgress` phase can be deleted with `kubectl delete backup <name> -n <velero-namespace>`.
+Backups in the `InProgress` phase have not uploaded any files to object storage.
 
 
 [1]: debugging-restores.md

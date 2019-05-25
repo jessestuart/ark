@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -96,10 +96,10 @@ func TestInitCommand(t *testing.T) {
 	assert.Equal(t, "repo-id", c.RepoIdentifier)
 }
 
-func TestStatsCommand(t *testing.T) {
-	c := StatsCommand("repo-id")
+func TestSnapshotsCommand(t *testing.T) {
+	c := SnapshotsCommand("repo-id")
 
-	assert.Equal(t, "stats", c.Command)
+	assert.Equal(t, "snapshots", c.Command)
 	assert.Equal(t, "repo-id", c.RepoIdentifier)
 }
 

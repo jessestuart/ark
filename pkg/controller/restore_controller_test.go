@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	core "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
@@ -42,10 +43,10 @@ import (
 	"github.com/heptio/velero/pkg/metrics"
 	"github.com/heptio/velero/pkg/persistence"
 	persistencemocks "github.com/heptio/velero/pkg/persistence/mocks"
-	"github.com/heptio/velero/pkg/plugin"
+	"github.com/heptio/velero/pkg/plugin/clientmgmt"
 	pluginmocks "github.com/heptio/velero/pkg/plugin/mocks"
-	"github.com/heptio/velero/pkg/restore"
-	"github.com/heptio/velero/pkg/util/collections"
+	"github.com/heptio/velero/pkg/plugin/velero"
+	pkgrestore "github.com/heptio/velero/pkg/restore"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 	"github.com/heptio/velero/pkg/volume"
 )
@@ -109,7 +110,7 @@ func TestFetchBackupInfo(t *testing.T) {
 				sharedInformers.Velero().V1().VolumeSnapshotLocations(),
 				logger,
 				logrus.InfoLevel,
-				func(logrus.FieldLogger) plugin.Manager { return pluginManager },
+				func(logrus.FieldLogger) clientmgmt.Manager { return pluginManager },
 				"default",
 				metrics.NewServerMetrics(),
 			).(*restoreController)
@@ -149,7 +150,7 @@ func TestFetchBackupInfo(t *testing.T) {
 	}
 }
 
-func TestProcessRestoreSkips(t *testing.T) {
+func TestProcessQueueItemSkips(t *testing.T) {
 	tests := []struct {
 		name        string
 		restoreKey  string
@@ -211,14 +212,14 @@ func TestProcessRestoreSkips(t *testing.T) {
 				sharedInformers.Velero().V1().Restores().Informer().GetStore().Add(test.restore)
 			}
 
-			err := c.processRestore(test.restoreKey)
+			err := c.processQueueItem(test.restoreKey)
 
 			assert.Equal(t, test.expectError, err != nil)
 		})
 	}
 }
 
-func TestProcessRestore(t *testing.T) {
+func TestProcessQueueItem(t *testing.T) {
 	tests := []struct {
 		name                            string
 		restoreKey                      string
@@ -299,6 +300,7 @@ func TestProcessRestore(t *testing.T) {
 			restorerError:         errors.New("blarg"),
 			expectedErr:           false,
 			expectedPhase:         string(api.RestorePhaseInProgress),
+			expectedFinalPhase:    string(api.RestorePhasePartiallyFailed),
 			expectedRestoreErrors: 1,
 			expectedRestorerCall:  NewRestore("foo", "bar", "backup-1", "ns-1", "", api.RestorePhaseInProgress).Restore,
 		},
@@ -407,7 +409,7 @@ func TestProcessRestore(t *testing.T) {
 				sharedInformers.Velero().V1().VolumeSnapshotLocations(),
 				logger,
 				logrus.InfoLevel,
-				func(logrus.FieldLogger) plugin.Manager { return pluginManager },
+				func(logrus.FieldLogger) clientmgmt.Manager { return pluginManager },
 				"default",
 				metrics.NewServerMetrics(),
 			).(*restoreController)
@@ -440,10 +442,14 @@ func TestProcessRestore(t *testing.T) {
 						return false, nil, err
 					}
 
-					phase, err := collections.GetString(patchMap, "status.phase")
+					phase, found, err := unstructured.NestedString(patchMap, "status", "phase")
 					if err != nil {
 						t.Logf("error getting status.phase: %s\n", err)
 						return false, nil, err
+					}
+					if !found {
+						t.Logf("status.phase not found")
+						return false, nil, errors.New("status.phase not found")
 					}
 
 					res := test.restore.DeepCopy()
@@ -453,7 +459,8 @@ func TestProcessRestore(t *testing.T) {
 
 					res.Status.Phase = api.RestorePhase(phase)
 
-					if backupName, err := collections.GetString(patchMap, "spec.backupName"); err == nil {
+					backupName, found, err := unstructured.NestedString(patchMap, "spec", "backupName")
+					if found {
 						res.Spec.BackupName = backupName
 					}
 
@@ -465,7 +472,7 @@ func TestProcessRestore(t *testing.T) {
 				sharedInformers.Velero().V1().Backups().Informer().GetStore().Add(test.backup)
 			}
 
-			var warnings, errors api.RestoreResult
+			var warnings, errors pkgrestore.Result
 			if test.restorerError != nil {
 				errors.Namespaces = map[string][]string{"ns-1": {test.restorerError.Error()}}
 			}
@@ -518,7 +525,7 @@ func TestProcessRestore(t *testing.T) {
 				pluginManager.On("CleanupClients")
 			}
 
-			err = c.processRestore(key)
+			err = c.processQueueItem(key)
 
 			assert.Equal(t, test.expectedErr, err != nil, "got error %v", err)
 			actions := client.Actions()
@@ -589,7 +596,7 @@ func TestProcessRestore(t *testing.T) {
 			if test.expectedFinalPhase != "" {
 				expected = Patch{
 					Status: StatusPatch{
-						Phase:  api.RestorePhaseCompleted,
+						Phase:  api.RestorePhase(test.expectedFinalPhase),
 						Errors: test.expectedRestoreErrors,
 					},
 				}
@@ -603,114 +610,6 @@ func TestProcessRestore(t *testing.T) {
 			assert.Equal(t, *test.expectedRestorerCall, restorer.calledWithArg)
 		})
 	}
-}
-
-func TestValidateAndComplete(t *testing.T) {
-	tests := []struct {
-		name              string
-		storageLocation   *api.BackupStorageLocation
-		snapshotLocations []*api.VolumeSnapshotLocation
-		backup            *api.Backup
-		volumeSnapshots   []*volume.Snapshot
-		restore           *api.Restore
-		expectedErrs      []string
-	}{
-		{
-			name:            "backup with .status.volumeBackups and no volumesnapshots.json file does not error",
-			storageLocation: velerotest.NewTestBackupStorageLocation().WithName("loc-1").BackupStorageLocation,
-			backup:          velerotest.NewTestBackup().WithName("backup-1").WithStorageLocation("loc-1").WithSnapshot("pv-1", "snap-1").Backup,
-			volumeSnapshots: nil,
-			restore:         velerotest.NewDefaultTestRestore().WithBackup("backup-1").Restore,
-			expectedErrs:    nil,
-		},
-		{
-			name:            "backup with no .status.volumeBackups and volumesnapshots.json file does not error",
-			storageLocation: velerotest.NewTestBackupStorageLocation().WithName("loc-1").BackupStorageLocation,
-			backup:          velerotest.NewTestBackup().WithName("backup-1").WithStorageLocation("loc-1").Backup,
-			volumeSnapshots: []*volume.Snapshot{{}},
-			restore:         velerotest.NewDefaultTestRestore().WithBackup("backup-1").Restore,
-			expectedErrs:    nil,
-		},
-		{
-			name:            "backup with both .status.volumeBackups and volumesnapshots.json file errors",
-			storageLocation: velerotest.NewTestBackupStorageLocation().WithName("loc-1").BackupStorageLocation,
-			backup:          velerotest.NewTestBackup().WithName("backup-1").WithStorageLocation("loc-1").WithSnapshot("pv-1", "snap-1").Backup,
-			volumeSnapshots: []*volume.Snapshot{{}},
-			restore:         velerotest.NewDefaultTestRestore().WithBackup("backup-1").Restore,
-			expectedErrs:    []string{"Backup must not have both .status.volumeBackups and a volumesnapshots.json.gz file in object storage"},
-		},
-		{
-			name:            "backup with .status.volumeBackups, and >1 volume snapshot locations exist, errors",
-			storageLocation: velerotest.NewTestBackupStorageLocation().WithName("loc-1").BackupStorageLocation,
-			snapshotLocations: []*api.VolumeSnapshotLocation{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: api.DefaultNamespace,
-						Name:      "vsl-1",
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: api.DefaultNamespace,
-						Name:      "vsl-2",
-					},
-				},
-			},
-			backup:       velerotest.NewTestBackup().WithName("backup-1").WithStorageLocation("loc-1").WithSnapshot("pv-1", "snap-1").Backup,
-			restore:      velerotest.NewDefaultTestRestore().WithBackup("backup-1").Restore,
-			expectedErrs: []string{"Cannot restore backup with .status.volumeBackups when more than one volume snapshot location exists"},
-		},
-		{
-			name:            "backup with .status.volumeBackups, and 1 volume snapshot location exists, does not error",
-			storageLocation: velerotest.NewTestBackupStorageLocation().WithName("loc-1").BackupStorageLocation,
-			snapshotLocations: []*api.VolumeSnapshotLocation{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: api.DefaultNamespace,
-						Name:      "vsl-1",
-					},
-				},
-			},
-			backup:       velerotest.NewTestBackup().WithName("backup-1").WithStorageLocation("loc-1").WithSnapshot("pv-1", "snap-1").Backup,
-			restore:      velerotest.NewDefaultTestRestore().WithBackup("backup-1").Restore,
-			expectedErrs: nil,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var (
-				clientset       = fake.NewSimpleClientset()
-				sharedInformers = informers.NewSharedInformerFactory(clientset, 0)
-				logger          = velerotest.NewLogger()
-				backupStore     = &persistencemocks.BackupStore{}
-				controller      = &restoreController{
-					genericController: &genericController{
-						logger: logger,
-					},
-					namespace:              api.DefaultNamespace,
-					backupLister:           sharedInformers.Velero().V1().Backups().Lister(),
-					backupLocationLister:   sharedInformers.Velero().V1().BackupStorageLocations().Lister(),
-					snapshotLocationLister: sharedInformers.Velero().V1().VolumeSnapshotLocations().Lister(),
-					newBackupStore: func(*api.BackupStorageLocation, persistence.ObjectStoreGetter, logrus.FieldLogger) (persistence.BackupStore, error) {
-						return backupStore, nil
-					},
-				}
-			)
-
-			require.NoError(t, sharedInformers.Velero().V1().BackupStorageLocations().Informer().GetStore().Add(tc.storageLocation))
-			require.NoError(t, sharedInformers.Velero().V1().Backups().Informer().GetStore().Add(tc.backup))
-			for _, loc := range tc.snapshotLocations {
-				require.NoError(t, sharedInformers.Velero().V1().VolumeSnapshotLocations().Informer().GetStore().Add(loc))
-			}
-			backupStore.On("GetBackupVolumeSnapshots", tc.backup.Name).Return(tc.volumeSnapshots, nil)
-
-			controller.validateAndComplete(tc.restore, nil)
-
-			assert.Equal(t, tc.expectedErrs, tc.restore.Status.ValidationErrors)
-		})
-	}
-
 }
 
 func TestvalidateAndCompleteWhenScheduleNameSpecified(t *testing.T) {
@@ -917,13 +816,13 @@ func (r *fakeRestorer) Restore(
 	backup *api.Backup,
 	volumeSnapshots []*volume.Snapshot,
 	backupReader io.Reader,
-	actions []restore.ItemAction,
+	actions []velero.RestoreItemAction,
 	snapshotLocationLister listers.VolumeSnapshotLocationLister,
-	blockStoreGetter restore.BlockStoreGetter,
-) (api.RestoreResult, api.RestoreResult) {
+	volumeSnapshotterGetter pkgrestore.VolumeSnapshotterGetter,
+) (pkgrestore.Result, pkgrestore.Result) {
 	res := r.Called(log, restore, backup, backupReader, actions)
 
 	r.calledWithArg = *restore
 
-	return res.Get(0).(api.RestoreResult), res.Get(1).(api.RestoreResult)
+	return res.Get(0).(pkgrestore.Result), res.Get(1).(pkgrestore.Result)
 }

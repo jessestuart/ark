@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,16 +28,17 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation"
 	core "k8s.io/client-go/testing"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
+	"github.com/heptio/velero/pkg/label"
 	"github.com/heptio/velero/pkg/persistence"
 	persistencemocks "github.com/heptio/velero/pkg/persistence/mocks"
-	"github.com/heptio/velero/pkg/plugin"
+	"github.com/heptio/velero/pkg/plugin/clientmgmt"
 	pluginmocks "github.com/heptio/velero/pkg/plugin/mocks"
-	"github.com/heptio/velero/pkg/util/stringslice"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
@@ -74,13 +75,47 @@ func defaultLocationsList(namespace string) []*velerov1api.BackupStorageLocation
 	}
 }
 
+func defaultLocationsListWithLongerLocationName(namespace string) []*velerov1api.BackupStorageLocation {
+	return []*velerov1api.BackupStorageLocation{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "the-really-long-location-name-that-is-much-more-than-63-characters-1",
+			},
+			Spec: velerov1api.BackupStorageLocationSpec{
+				Provider: "objStoreProvider",
+				StorageType: velerov1api.StorageType{
+					ObjectStorage: &velerov1api.ObjectStorageLocation{
+						Bucket: "bucket-1",
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: namespace,
+				Name:      "the-really-long-location-name-that-is-much-more-than-63-characters-2",
+			},
+			Spec: velerov1api.BackupStorageLocationSpec{
+				Provider: "objStoreProvider",
+				StorageType: velerov1api.StorageType{
+					ObjectStorage: &velerov1api.ObjectStorageLocation{
+						Bucket: "bucket-2",
+					},
+				},
+			},
+		},
+	}
+}
+
 func TestBackupSyncControllerRun(t *testing.T) {
 	tests := []struct {
-		name            string
-		namespace       string
-		locations       []*velerov1api.BackupStorageLocation
-		cloudBackups    map[string][]*velerov1api.Backup
-		existingBackups []*velerov1api.Backup
+		name                    string
+		namespace               string
+		locations               []*velerov1api.BackupStorageLocation
+		cloudBackups            map[string][]*velerov1api.Backup
+		existingBackups         []*velerov1api.Backup
+		longLocationNameEnabled bool
 	}{
 		{
 			name: "no cloud backups",
@@ -96,16 +131,6 @@ func TestBackupSyncControllerRun(t *testing.T) {
 				},
 				"bucket-2": {
 					velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-3").Backup,
-				},
-			},
-		},
-		{
-			name:      "gcFinalizer (only) gets removed on sync",
-			namespace: "ns-1",
-			locations: defaultLocationsList("ns-1"),
-			cloudBackups: map[string][]*velerov1api.Backup{
-				"bucket-1": {
-					velerotest.NewTestBackup().WithNamespace("ns-1").WithFinalizers("a-finalizer", gcFinalizer, "some-other-finalizer").Backup,
 				},
 			},
 		},
@@ -174,6 +199,21 @@ func TestBackupSyncControllerRun(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:                    "backup storage location names and labels get updated with location name greater than 63 chars",
+			namespace:               "ns-1",
+			locations:               defaultLocationsListWithLongerLocationName("ns-1"),
+			longLocationNameEnabled: true,
+			cloudBackups: map[string][]*velerov1api.Backup{
+				"bucket-1": {
+					velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-1").WithStorageLocation("foo").WithLabel(velerov1api.StorageLocationLabel, "foo").Backup,
+					velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-2").Backup,
+				},
+				"bucket-2": {
+					velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-3").WithStorageLocation("bar").WithLabel(velerov1api.StorageLocationLabel, "bar").Backup,
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -193,7 +233,7 @@ func TestBackupSyncControllerRun(t *testing.T) {
 				time.Duration(0),
 				test.namespace,
 				"",
-				func(logrus.FieldLogger) plugin.Manager { return pluginManager },
+				func(logrus.FieldLogger) clientmgmt.Manager { return pluginManager },
 				velerotest.NewLogger(),
 			).(*backupSyncController)
 
@@ -268,12 +308,15 @@ func TestBackupSyncControllerRun(t *testing.T) {
 
 						assert.Equal(t, expected, obj)
 					} else {
-						// verify that the GC finalizer is removed
-						assert.Equal(t, stringslice.Except(cloudBackup.Finalizers, gcFinalizer), obj.Finalizers)
-
 						// verify that the storage location field and label are set properly
 						assert.Equal(t, location.Name, obj.Spec.StorageLocation)
-						assert.Equal(t, location.Name, obj.Labels[velerov1api.StorageLocationLabel])
+
+						locationName := location.Name
+						if test.longLocationNameEnabled {
+							locationName = label.GetValidName(locationName)
+						}
+						assert.Equal(t, locationName, obj.Labels[velerov1api.StorageLocationLabel])
+						assert.Equal(t, true, len(obj.Labels[velerov1api.StorageLocationLabel]) <= validation.DNS1035LabelMaxLength)
 					}
 				}
 			}
@@ -404,6 +447,84 @@ func TestDeleteOrphanedBackups(t *testing.T) {
 			}
 
 			c.deleteOrphanedBackups("default", test.cloudBackups, velerotest.NewLogger())
+
+			numBackups, err := numBackups(t, client, c.namespace)
+			assert.NoError(t, err)
+
+			expected := len(test.k8sBackups) - len(test.expectedDeletes)
+			assert.Equal(t, expected, numBackups)
+
+			velerotest.CompareActions(t, expectedDeleteActions, getDeleteActions(client.Actions()))
+		})
+	}
+}
+
+func TestStorageLabelsInDeleteOrphanedBackups(t *testing.T) {
+	longLabelName := "the-really-long-location-name-that-is-much-more-than-63-characters"
+	tests := []struct {
+		name            string
+		cloudBackups    sets.String
+		k8sBackups      []*velerotest.TestBackup
+		namespace       string
+		expectedDeletes sets.String
+	}{
+		{
+			name:         "some overlapping backups",
+			namespace:    "ns-1",
+			cloudBackups: sets.NewString("backup-1", "backup-2", "backup-3"),
+			k8sBackups: []*velerotest.TestBackup{
+				velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-1").
+					WithLabel(velerov1api.StorageLocationLabel, "the-really-long-location-name-that-is-much-more-than-63-c69e779").WithPhase(velerov1api.BackupPhaseCompleted),
+				velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-2").
+					WithLabel(velerov1api.StorageLocationLabel, "the-really-long-location-name-that-is-much-more-than-63-c69e779").WithPhase(velerov1api.BackupPhaseCompleted),
+				velerotest.NewTestBackup().WithNamespace("ns-1").WithName("backup-C").
+					WithLabel(velerov1api.StorageLocationLabel, "the-really-long-location-name-that-is-much-more-than-63-c69e779").WithPhase(velerov1api.BackupPhaseCompleted),
+			},
+			expectedDeletes: sets.NewString("backup-C"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var (
+				client          = fake.NewSimpleClientset()
+				sharedInformers = informers.NewSharedInformerFactory(client, 0)
+			)
+
+			c := NewBackupSyncController(
+				client.VeleroV1(),
+				client.VeleroV1(),
+				sharedInformers.Velero().V1().Backups(),
+				sharedInformers.Velero().V1().BackupStorageLocations(),
+				time.Duration(0),
+				test.namespace,
+				"",
+				nil, // new plugin manager func
+				velerotest.NewLogger(),
+			).(*backupSyncController)
+
+			expectedDeleteActions := make([]core.Action, 0)
+
+			for _, backup := range test.k8sBackups {
+				// add test backup to informer
+				require.NoError(t, sharedInformers.Velero().V1().Backups().Informer().GetStore().Add(backup.Backup), "Error adding backup to informer")
+
+				// add test backup to client
+				_, err := client.VeleroV1().Backups(test.namespace).Create(backup.Backup)
+				require.NoError(t, err, "Error adding backup to clientset")
+
+				// if we expect this backup to be deleted, set up the expected DeleteAction
+				if test.expectedDeletes.Has(backup.Name) {
+					actionDelete := core.NewDeleteAction(
+						velerov1api.SchemeGroupVersion.WithResource("backups"),
+						test.namespace,
+						backup.Name,
+					)
+					expectedDeleteActions = append(expectedDeleteActions, actionDelete)
+				}
+			}
+
+			c.deleteOrphanedBackups(longLabelName, test.cloudBackups, velerotest.NewLogger())
 
 			numBackups, err := numBackups(t, client, c.namespace)
 			assert.NoError(t, err)

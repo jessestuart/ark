@@ -2,7 +2,7 @@
 
 ## Use
 
-The `Backup` API type is used as a request for the Velero Server to perform a backup. Once created, the
+The `Backup` API type is used as a request for the Velero server to perform a backup. Once created, the
 Velero Server immediately starts the backup process.
 
 ## API GroupVersion
@@ -22,7 +22,7 @@ kind: Backup
 metadata:
   # Backup name. May be any valid Kubernetes object name. Required.
   name: a
-  # Backup namespace. Required. In version 0.7.0 and later, can be any string. Must be the namespace of the Velero server.
+  # Backup namespace. Must be the namespace of the Velero server. Required.
   namespace: velero
 # Parameters about the backup. Required.
 spec:
@@ -66,7 +66,9 @@ spec:
   volumeSnapshotLocations:
     - aws-primary
     - gcp-primary
-  # The amount of time before this backup is eligible for garbage collection.
+  # The amount of time before this backup is eligible for garbage collection. If not specified, 
+  # a default value of 30 days will be used. The default can be configured on the velero server
+  # by passing the flag --default-backup-ttl. 
   ttl: 24h0m0s
   # Actions to perform at different times during a backup. The only hook currently supported is
   # executing a command in a container in a pod using the pod exec API. Optional.
@@ -95,10 +97,6 @@ spec:
             app: velero
             component: server
         # An array of hooks to run before executing custom actions. Currently only "exec" hooks are supported.
-        # DEPRECATED. Use pre instead.
-        hooks:
-          # Same content as pre below.
-        # An array of hooks to run before executing custom actions. Currently only "exec" hooks are supported.
         pre:
           - 
             # The type of hook. This must be "exec".
@@ -121,24 +119,25 @@ spec:
           # Same content as pre above.
 # Status about the Backup. Users should not set any data here.
 status:
+  # The version of this Backup. The only version currently supported is 1.
+  version: 1
   # The date and time when the Backup is eligible for garbage collection.
   expiration: null
-  # The current phase. Valid values are New, FailedValidation, InProgress, Completed, Failed.
+  # The current phase. Valid values are New, FailedValidation, InProgress, Completed, PartiallyFailed, Failed.
   phase: ""
   # An array of any validation errors encountered.
   validationErrors: null
-  # The version of this Backup. The only version currently supported is 1.
-  version: 1
-  # Information about PersistentVolumes needed during restores.
-  volumeBackups:
-    # Each key is the name of a PersistentVolume.
-    some-pv-name:
-      # The ID used by the cloud provider for the snapshot created for this Backup.
-      snapshotID: snap-1234
-      # The type of the volume in the cloud provider API.
-      type: io1
-      # The availability zone where the volume resides in the cloud provider.
-      availabilityZone: my-zone
-      # The amount of provisioned IOPS for the volume. Optional.
-      iops: 10000
+  # Date/time when the backup started being processed.
+  startTimestamp: 2019-04-29T15:58:43Z
+  # Date/time when the backup finished being processed.
+  completionTimestamp: 2019-04-29T15:58:56Z
+  # Number of volume snapshots that Velero tried to create for this backup.
+  volumeSnapshotsAttempted: 2
+  # Number of volume snapshots that Velero successfully created for this backup.
+  volumeSnapshotsCompleted: 1
+  # Number of warnings that were logged by the backup.
+  warnings: 2
+  # Number of errors that were logged by the backup.
+  errors: 0
+  
 ```

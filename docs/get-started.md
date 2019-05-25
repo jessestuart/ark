@@ -13,17 +13,21 @@ If you encounter issues with installing or configuring, see [Debugging Installat
 
 ### Prerequisites
 
-* Access to a Kubernetes cluster, version 1.7 or later. Version 1.7.5 or later is required to run `velero backup delete`.
+* Access to a Kubernetes cluster, version 1.7 or later.  **Note:** restic support requires Kubernetes version 1.10 or later, or an earlier version with the mount propagation feature enabled. Restic support is not required for this example, but may be of interest later. See [Restic Integration][17].
 * A DNS server on the cluster
 * `kubectl` installed
 
-### Download
+### Download Velero
 
-1. Download the [latest release's][26] tarball for your platform.
+1. Download the [latest official release's](https://github.com/heptio/velero/releases) tarball for your client platform.
+
+    _We strongly recommend that you use an [official release](https://github.com/heptio/velero/releases) of
+Velero. The tarballs for each release contain the `velero` command-line client. The code in the master branch
+of the Velero repository is under active development and is not guaranteed to be stable!_
 
 1. Extract the tarball:
     ```bash
-    tar -xzf <RELEASE-TARBALL-NAME>.tar.gz -C /dir/to/extract/to 
+    tar -xvf <RELEASE-TARBALL-NAME>.tar.gz -C /dir/to/extract/to 
     ```
     We'll refer to the directory you extracted to as the "Velero directory" in subsequent steps.
 
@@ -40,17 +44,36 @@ brew install velero
 
 These instructions start the Velero server and a Minio instance that is accessible from within the cluster only. See [Expose Minio outside your cluster][31] for information about configuring your cluster for outside access to Minio. Outside access is required to access logs and run `velero describe` commands.
 
-1.  Start the server and the local storage service. In the Velero directory, run:
+1. Create a Velero-specific credentials file (`credentials-velero`) in your local directory:
+
+    ```
+    [default]
+    aws_access_key_id = minio
+    aws_secret_access_key = minio123
+    ```
+
+1. Start the server and the local storage service. In the Velero directory, run:
 
     ```bash
-    kubectl apply -f config/common/00-prereqs.yaml
-    kubectl apply -f config/minio/
+    kubectl apply -f examples/minio/00-minio-deployment.yaml
+
+    velero install \
+        --provider aws \
+        --bucket velero \
+        --secret-file ./credentials-velero \
+        --use-volume-snapshots=false \
+        --backup-location-config region=minio,s3ForcePathStyle="true",s3Url=http://minio.velero.svc:9000
     ```
+
+    This example assumes that it is running within a local cluster without a volume provider capable of snapshots, so no `VolumeSnapshotLocation` is created (`--use-volume-snapshots=false`).
+
+    Additionally, you can specify `--use-restic` to enable restic support, and `--wait` to wait for the deployment to be ready.
+
 
 1. Deploy the example nginx application:
 
     ```bash
-    kubectl apply -f config/nginx-app/base.yaml
+    kubectl apply -f examples/nginx-app/base.yaml
     ```
 
 1. Check to see that both the Velero and nginx deployments are successfully created:
@@ -158,18 +181,88 @@ Once fully removed, the backup is no longer visible when you run:
 velero backup get BACKUP_NAME
 ```
 
-If you want to uninstall Velero but preserve the backup data in object storage and persistent volume
-snapshots, it is safe to remove the `velero` namespace and everything else created for this
-example:
+To completely uninstall Velero, minio, and the nginx example app from your Kubernetes cluster:
 
 ```
-kubectl delete -f config/common/
-kubectl delete -f config/minio/
-kubectl delete -f config/nginx-app/base.yaml
+kubectl delete namespace/velero clusterrolebinding/velero
+kubectl delete crds -l component=velero
+kubectl delete -f examples/nginx-app/base.yaml
 ```
 
-[31]: expose-minio.md
+## Expose Minio outside your cluster with a Service
+
+When you run commands to get logs or describe a backup, the Velero server generates a pre-signed URL to download the requested items. To access these URLs from outside the cluster -- that is, from your Velero client -- you need to make Minio available outside the cluster. You can:
+
+- Change the Minio Service type from `ClusterIP` to `NodePort`.
+- Set up Ingress for your cluster, keeping Minio Service type `ClusterIP`.
+
+You can also specify a `publicUrl` config field for the pre-signed URL in your backup storage location config.
+
+For basic instructions on how to install the Velero server and client, see [the getting started example][1].
+
+### Expose Minio with Service of type NodePort
+
+The Minio deployment by default specifies a Service of type `ClusterIP`. You can change this to `NodePort` to easily expose a cluster service externally if you can reach the node from your Velero client.
+
+You must also get the Minio URL, which you can then specify as the value of the `publicUrl` field in your backup storage location config.
+
+1.  In `examples/minio/00-minio-deployment.yaml`, change the value of Service `spec.type` from `ClusterIP` to `NodePort`.
+
+1.  Get the Minio URL:
+
+    - if you're running Minikube:
+
+      ```shell
+      minikube service minio --namespace=velero --url
+      ```
+
+    - in any other environment:
+
+      1.  Get the value of an external IP address or DNS name of any node in your cluster. You must be able to reach this address from the Velero client.
+
+      1.  Append the value of the NodePort to get a complete URL. You can get this value by running:
+
+          ```shell
+          kubectl -n velero get svc/minio -o jsonpath='{.spec.ports[0].nodePort}'
+          ```
+
+1.  Edit your `BackupStorageLocation` YAML, adding `publicUrl: <URL_FROM_PREVIOUS_STEP>` as a field under `spec.config`. You must include the `http://` or `https://` prefix.
+
+## Expose Minio outside your cluster with Kubernetes in Docker (KinD):
+
+Kubernetes in Docker currently does not have support for NodePort services (see [this issue](https://github.com/kubernetes-sigs/kind/issues/99)). In this case, you can use a port forward to access the Minio bucket.
+
+In a terminal, run the following:
+
+```shell
+MINIO_POD=$(kubectl get pods -n velero -l component=minio -o jsonpath='{.items[0].metadata.name}')
+
+kubectl port-forwward $MINIO_POD -n velero 9000:9000
+```
+
+Then, in another terminal:
+
+```shell
+kubectl edit backupstoragelocation default -n velero
+```
+
+Add `publicUrl: http://localhost:9000` under the `spec.config` section.
+
+### Work with Ingress
+
+Configuring Ingress for your cluster is out of scope for the Velero documentation. If you have already set up Ingress, however, it makes sense to continue with it while you run the example Velero configuration with Minio.
+
+In this case: 
+
+1.  Keep the Service type as `ClusterIP`.
+
+1.  Edit your `BackupStorageLocation` YAML, adding `publicUrl: <URL_AND_PORT_OF_INGRESS>` as a field under `spec.config`.
+
+
+[1]: get-started.md
 [3]: install-overview.md
+[17]: restic.md
 [18]: debugging-restores.md
 [26]: https://github.com/heptio/velero/releases
 [30]: https://godoc.org/github.com/robfig/cron
+[31]: #expose-minio-outside-your-cluster

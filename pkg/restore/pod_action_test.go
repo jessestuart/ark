@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,148 +20,174 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1api "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/heptio/velero/pkg/plugin/velero"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
 func TestPodActionExecute(t *testing.T) {
+	var priority int32 = 1
+
 	tests := []struct {
 		name        string
-		obj         runtime.Unstructured
+		obj         corev1api.Pod
 		expectedErr bool
-		expectedRes runtime.Unstructured
+		expectedRes corev1api.Pod
 	}{
 		{
-			name:        "no spec should error",
-			obj:         NewTestUnstructured().WithName("pod-1").Unstructured,
-			expectedErr: true,
-		},
-		{
 			name: "nodeName (only) should be deleted from spec",
-			obj: NewTestUnstructured().WithName("pod-1").WithSpec("nodeName", "foo").
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("pod-1").WithSpec("foo").
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					NodeName:           "foo",
+					ServiceAccountName: "bar",
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "bar",
+				},
+			},
 		},
 		{
 			name: "priority (only) should be deleted from spec",
-			obj: NewTestUnstructured().WithName("pod-1").WithSpec("priority", "foo").
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("pod-1").WithSpec("foo").
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					Priority:           &priority,
+					ServiceAccountName: "bar",
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "bar",
+				},
+			},
 		},
 		{
 			name: "volumes matching prefix <service account name>-token- should be deleted",
-			obj: NewTestUnstructured().WithName("pod-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-					map[string]interface{}{"name": "foo-token-foo"},
-				}).
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("pod-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-				}).
-				WithSpecField("containers", []interface{}{}).
-				Unstructured,
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+						{Name: "foo-token-foo"},
+					},
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+					},
+				},
+			},
 		},
 		{
 			name: "container volumeMounts matching prefix <service account name>-token- should be deleted",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-					map[string]interface{}{"name": "foo-token-foo"},
-				}).
-				WithSpecField("containers", []interface{}{
-					map[string]interface{}{
-						"volumeMounts": []interface{}{
-							map[string]interface{}{"name": "foo"},
-							map[string]interface{}{"name": "foo-token-foo"},
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+						{Name: "foo-token-foo"},
+					},
+					Containers: []corev1api.Container{
+						{
+							VolumeMounts: []corev1api.VolumeMount{
+								{Name: "foo"},
+								{Name: "foo-token-foo"},
+							},
 						},
 					},
-				}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-				}).
-				WithSpecField("containers", []interface{}{
-					map[string]interface{}{
-						"volumeMounts": []interface{}{
-							map[string]interface{}{"name": "foo"},
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+					},
+					Containers: []corev1api.Container{
+						{
+							VolumeMounts: []corev1api.VolumeMount{
+								{Name: "foo"},
+							},
 						},
 					},
-				}).
-				Unstructured,
+				},
+			},
 		},
 		{
 			name: "initContainer volumeMounts matching prefix <service account name>-token- should be deleted",
-			obj: NewTestUnstructured().WithName("svc-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("containers", []interface{}{}).
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-					map[string]interface{}{"name": "foo-token-foo"},
-				}).
-				WithSpecField("initContainers", []interface{}{
-					map[string]interface{}{
-						"volumeMounts": []interface{}{
-							map[string]interface{}{"name": "foo"},
-							map[string]interface{}{"name": "foo-token-foo"},
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+						{Name: "foo-token-foo"},
+					},
+					InitContainers: []corev1api.Container{
+						{
+							VolumeMounts: []corev1api.VolumeMount{
+								{Name: "foo"},
+								{Name: "foo-token-foo"},
+							},
 						},
 					},
-				}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("svc-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("containers", []interface{}{}).
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-				}).
-				WithSpecField("initContainers", []interface{}{
-					map[string]interface{}{
-						"volumeMounts": []interface{}{
-							map[string]interface{}{"name": "foo"},
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+					},
+					InitContainers: []corev1api.Container{
+						{
+							VolumeMounts: []corev1api.VolumeMount{
+								{Name: "foo"},
+							},
 						},
 					},
-				}).
-				Unstructured,
+				},
+			},
 		},
 		{
 			name: "containers and initContainers with no volume mounts should not error",
-			obj: NewTestUnstructured().WithName("pod-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-					map[string]interface{}{"name": "foo-token-foo"},
-				}).
-				WithSpecField("containers", []interface{}{}).
-				WithSpecField("initContainers", []interface{}{}).
-				Unstructured,
-			expectedErr: false,
-			expectedRes: NewTestUnstructured().WithName("pod-1").
-				WithSpec("serviceAccountName", "foo").
-				WithSpecField("volumes", []interface{}{
-					map[string]interface{}{"name": "foo"},
-				}).
-				WithSpecField("containers", []interface{}{}).
-				WithSpecField("initContainers", []interface{}{}).
-				Unstructured,
+			obj: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+						{Name: "foo-token-foo"},
+					},
+				},
+			},
+			expectedRes: corev1api.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-1"},
+				Spec: corev1api.PodSpec{
+					ServiceAccountName: "foo",
+					Volumes: []corev1api.Volume{
+						{Name: "foo"},
+					},
+				},
+			},
 		},
 	}
 
@@ -169,17 +195,25 @@ func TestPodActionExecute(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			action := NewPodAction(velerotest.NewLogger())
 
-			res, warning, err := action.Execute(test.obj, nil)
+			unstructuredPod, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&test.obj)
+			require.NoError(t, err)
 
-			assert.Nil(t, warning)
+			res, err := action.Execute(&velero.RestoreItemActionExecuteInput{
+				Item:           &unstructured.Unstructured{Object: unstructuredPod},
+				ItemFromBackup: &unstructured.Unstructured{Object: unstructuredPod},
+				Restore:        nil,
+			})
 
 			if test.expectedErr {
 				assert.NotNil(t, err, "expected an error")
-			} else {
-				assert.Nil(t, err, "expected no error, got %v", err)
+				return
 			}
+			assert.Nil(t, err, "expected no error, got %v", err)
 
-			assert.Equal(t, test.expectedRes, res)
+			var pod corev1api.Pod
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(res.UpdatedItem.UnstructuredContent(), &pod))
+
+			assert.Equal(t, test.expectedRes, pod)
 		})
 	}
 }
