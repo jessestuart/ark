@@ -2,6 +2,9 @@
 
 export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
 
+# Login to Docker Hub.
+echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
+
 WORKING_DIR="$GOPATH/src/github.com/${GITHUB_REPO}"
 mkdir -p $WORKING_DIR && cd $WORKING_DIR
 # ============
@@ -15,6 +18,10 @@ fi
 # </qemu-support>
 # ============
 
+# =======================================================
+# Main velero image.
+# =======================================================
+
 # Replace the repo's Dockerfile with our own.
 cp -f $DIR/Dockerfile .
 docker build -t ${IMAGE_ID} \
@@ -22,11 +29,28 @@ docker build -t ${IMAGE_ID} \
   --build-arg goarch=$GOARCH \
   --build-arg image=${GITHUB_REPO} .
 
-# Login to Docker Hub.
-echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
 # Push push push
 docker push ${IMAGE_ID}
 if [ $CIRCLE_BRANCH == 'master' ]; then
   docker tag "${IMAGE_ID}" "${REGISTRY}/${IMAGE}:latest-${TAG}"
+  docker push "${REGISTRY}/${IMAGE}:latest-${TAG}"
+fi
+
+# =======================================================
+# Secondary velero-restic-restore-helper image.
+# =======================================================
+
+export IMAGE=velero-restic-restore-helper
+export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
+cp -f $DIR/Dockerfile-velero-restic-restore-helper .
+docker build -t $IMAGE_ID \
+  --build-arg target=$TARGET \
+  --build-arg goarch=$GOARCH \
+  --build-arg image=$GITHUB_REPO .
+
+# Push push push
+docker push $IMAGE_ID
+if [ $CIRCLE_BRANCH == 'master' ]; then
+  docker tag "$RESTORE_HELPER_IMAGE_ID" "${REGISTRY}/${IMAGE}:latest-${TAG}"
   docker push "${REGISTRY}/${IMAGE}:latest-${TAG}"
 fi
