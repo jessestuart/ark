@@ -147,9 +147,10 @@ func NewCommand() *cobra.Command {
 	)
 
 	var command = &cobra.Command{
-		Use:   "server",
-		Short: "Run the velero server",
-		Long:  "Run the velero server",
+		Use:    "server",
+		Short:  "Run the velero server",
+		Long:   "Run the velero server",
+		Hidden: true,
 		Run: func(c *cobra.Command, args []string) {
 			// go-plugin uses log.Println to log when it's waiting for all plugin processes to complete so we need to
 			// set its output to stdout.
@@ -194,7 +195,7 @@ func NewCommand() *cobra.Command {
 	command.Flags().StringVar(&config.metricsAddress, "metrics-address", config.metricsAddress, "the address to expose prometheus metrics")
 	command.Flags().DurationVar(&config.backupSyncPeriod, "backup-sync-period", config.backupSyncPeriod, "how often to ensure all Velero backups in object storage exist as Backup API objects in the cluster")
 	command.Flags().DurationVar(&config.podVolumeOperationTimeout, "restic-timeout", config.podVolumeOperationTimeout, "how long backups/restores of pod volumes should be allowed to run before timing out")
-	command.Flags().BoolVar(&config.restoreOnly, "restore-only", config.restoreOnly, "run in a mode where only restores are allowed; backups, schedules, and garbage-collection are all disabled")
+	command.Flags().BoolVar(&config.restoreOnly, "restore-only", config.restoreOnly, "run in a mode where only restores are allowed; backups, schedules, and garbage-collection are all disabled. DEPRECATED: this flag will be removed in v2.0. Use read-only backup storage locations instead.")
 	command.Flags().StringSliceVar(&config.disabledControllers, "disable-controllers", config.disabledControllers, fmt.Sprintf("list of controllers to disable on startup. Valid values are %s", strings.Join(disableControllerList, ",")))
 	command.Flags().StringSliceVar(&config.restoreResourcePriorities, "restore-resource-priorities", config.restoreResourcePriorities, "desired order of resource restores; any resource not in the list will be restored alphabetically after the prioritized resources")
 	command.Flags().StringVar(&config.defaultBackupLocation, "default-backup-storage-location", config.defaultBackupLocation, "name of the default backup storage location")
@@ -629,6 +630,7 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 			s.sharedInformerFactory.Velero().V1().Backups(),
 			s.sharedInformerFactory.Velero().V1().DeleteBackupRequests(),
 			s.veleroClient.VeleroV1(),
+			s.sharedInformerFactory.Velero().V1().BackupStorageLocations(),
 		)
 
 		return controllerRunInfo{
@@ -733,6 +735,7 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 			s.logger,
 			s.veleroClient.VeleroV1(),
 			s.sharedInformerFactory.Velero().V1().ServerStatusRequests(),
+			s.pluginRegistry,
 		)
 
 		return controllerRunInfo{

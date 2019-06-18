@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Velero contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,17 +18,13 @@ package backup
 
 import (
 	"bytes"
-	"reflect"
-	"sort"
 	"testing"
-	"time"
 
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -42,214 +38,9 @@ import (
 	"github.com/heptio/velero/pkg/podexec"
 	"github.com/heptio/velero/pkg/restic"
 	"github.com/heptio/velero/pkg/util/collections"
-	kubeutil "github.com/heptio/velero/pkg/util/kube"
 	"github.com/heptio/velero/pkg/util/logging"
 	velerotest "github.com/heptio/velero/pkg/util/test"
 )
-
-var (
-	trueVal      = true
-	falseVal     = false
-	truePointer  = &trueVal
-	falsePointer = &falseVal
-)
-
-type fakeAction struct {
-	selector        velero.ResourceSelector
-	ids             []string
-	backups         []v1.Backup
-	additionalItems []velero.ResourceIdentifier
-}
-
-var _ velero.BackupItemAction = &fakeAction{}
-
-func newFakeAction(resource string) *fakeAction {
-	return (&fakeAction{}).ForResource(resource)
-}
-
-func (a *fakeAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, error) {
-	metadata, err := meta.Accessor(item)
-	if err != nil {
-		return item, a.additionalItems, err
-	}
-	a.ids = append(a.ids, kubeutil.NamespaceAndName(metadata))
-	a.backups = append(a.backups, *backup)
-
-	return item, a.additionalItems, nil
-}
-
-func (a *fakeAction) AppliesTo() (velero.ResourceSelector, error) {
-	return a.selector, nil
-}
-
-func (a *fakeAction) ForResource(resource string) *fakeAction {
-	a.selector.IncludedResources = []string{resource}
-	return a
-}
-
-func TestResolveActions(t *testing.T) {
-	tests := []struct {
-		name                string
-		input               []velero.BackupItemAction
-		expected            []resolvedAction
-		resourcesWithErrors []string
-		expectError         bool
-	}{
-		{
-			name:     "empty input",
-			input:    []velero.BackupItemAction{},
-			expected: nil,
-		},
-		{
-			name:        "resolve error",
-			input:       []velero.BackupItemAction{&fakeAction{selector: velero.ResourceSelector{LabelSelector: "=invalid-selector"}}},
-			expected:    nil,
-			expectError: true,
-		},
-		{
-			name:  "resolved",
-			input: []velero.BackupItemAction{newFakeAction("foo"), newFakeAction("bar")},
-			expected: []resolvedAction{
-				{
-					BackupItemAction:          newFakeAction("foo"),
-					resourceIncludesExcludes:  collections.NewIncludesExcludes().Includes("foodies.somegroup"),
-					namespaceIncludesExcludes: collections.NewIncludesExcludes(),
-					selector:                  labels.Everything(),
-				},
-				{
-					BackupItemAction:          newFakeAction("bar"),
-					resourceIncludesExcludes:  collections.NewIncludesExcludes().Includes("barnacles.anothergroup"),
-					namespaceIncludesExcludes: collections.NewIncludesExcludes(),
-					selector:                  labels.Everything(),
-				},
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			resources := map[schema.GroupVersionResource]schema.GroupVersionResource{
-				{Resource: "foo"}: {Group: "somegroup", Resource: "foodies"},
-				{Resource: "fie"}: {Group: "somegroup", Resource: "fields"},
-				{Resource: "bar"}: {Group: "anothergroup", Resource: "barnacles"},
-				{Resource: "baz"}: {Group: "anothergroup", Resource: "bazaars"},
-			}
-			discoveryHelper := velerotest.NewFakeDiscoveryHelper(false, resources)
-
-			actual, err := resolveActions(test.input, discoveryHelper)
-			gotError := err != nil
-
-			if e, a := test.expectError, gotError; e != a {
-				t.Fatalf("error: expected %t, got %t", e, a)
-			}
-			if test.expectError {
-				return
-			}
-
-			assert.Equal(t, test.expected, actual)
-		})
-	}
-}
-
-func TestGetResourceIncludesExcludes(t *testing.T) {
-	tests := []struct {
-		name                string
-		includes            []string
-		excludes            []string
-		resourcesWithErrors []string
-		expectedIncludes    []string
-		expectedExcludes    []string
-	}{
-		{
-			name:             "no input",
-			expectedIncludes: []string{},
-			expectedExcludes: []string{},
-		},
-		{
-			name:             "wildcard includes",
-			includes:         []string{"*", "asdf"},
-			excludes:         []string{},
-			expectedIncludes: []string{"*"},
-			expectedExcludes: []string{},
-		},
-		{
-			name:             "wildcard excludes aren't allowed or resolved",
-			includes:         []string{},
-			excludes:         []string{"*"},
-			expectedIncludes: []string{},
-			expectedExcludes: []string{},
-		},
-		{
-			name:             "resolution works",
-			includes:         []string{"foo", "fie"},
-			excludes:         []string{"bar", "baz"},
-			expectedIncludes: []string{"foodies.somegroup", "fields.somegroup"},
-			expectedExcludes: []string{"barnacles.anothergroup", "bazaars.anothergroup"},
-		},
-		{
-			name:             "some unresolvable",
-			includes:         []string{"foo", "fie", "bad1"},
-			excludes:         []string{"bar", "baz", "bad2"},
-			expectedIncludes: []string{"foodies.somegroup", "fields.somegroup"},
-			expectedExcludes: []string{"barnacles.anothergroup", "bazaars.anothergroup"},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			resources := map[schema.GroupVersionResource]schema.GroupVersionResource{
-				{Resource: "foo"}: {Group: "somegroup", Resource: "foodies"},
-				{Resource: "fie"}: {Group: "somegroup", Resource: "fields"},
-				{Resource: "bar"}: {Group: "anothergroup", Resource: "barnacles"},
-				{Resource: "baz"}: {Group: "anothergroup", Resource: "bazaars"},
-			}
-			discoveryHelper := velerotest.NewFakeDiscoveryHelper(false, resources)
-
-			actual := getResourceIncludesExcludes(discoveryHelper, test.includes, test.excludes)
-
-			sort.Strings(test.expectedIncludes)
-			actualIncludes := actual.GetIncludes()
-			sort.Strings(actualIncludes)
-			if e, a := test.expectedIncludes, actualIncludes; !reflect.DeepEqual(e, a) {
-				t.Errorf("includes: expected %v, got %v", e, a)
-			}
-
-			sort.Strings(test.expectedExcludes)
-			actualExcludes := actual.GetExcludes()
-			sort.Strings(actualExcludes)
-			if e, a := test.expectedExcludes, actualExcludes; !reflect.DeepEqual(e, a) {
-				t.Errorf("excludes: expected %v, got %v", e, a)
-				t.Errorf("excludes: expected %v, got %v", len(e), len(a))
-			}
-		})
-	}
-}
-
-func TestGetNamespaceIncludesExcludes(t *testing.T) {
-	backup := &v1.Backup{
-		Spec: v1.BackupSpec{
-			IncludedResources:  []string{"foo", "bar"},
-			ExcludedResources:  []string{"fie", "baz"},
-			IncludedNamespaces: []string{"a", "b", "c"},
-			ExcludedNamespaces: []string{"d", "e", "f"},
-			TTL:                metav1.Duration{Duration: 1 * time.Hour},
-		},
-	}
-
-	ns := getNamespaceIncludesExcludes(backup)
-
-	actualIncludes := ns.GetIncludes()
-	sort.Strings(actualIncludes)
-	if e, a := backup.Spec.IncludedNamespaces, actualIncludes; !reflect.DeepEqual(e, a) {
-		t.Errorf("includes: expected %v, got %v", e, a)
-	}
-
-	actualExcludes := ns.GetExcludes()
-	sort.Strings(actualExcludes)
-	if e, a := backup.Spec.ExcludedNamespaces, actualExcludes; !reflect.DeepEqual(e, a) {
-		t.Errorf("excludes: expected %v, got %v", e, a)
-	}
-}
 
 var (
 	v1Group = &metav1.APIResourceList{
@@ -381,24 +172,6 @@ func TestBackup(t *testing.T) {
 		expectedError      error
 	}{
 		{
-			name: "error resolving actions returns an error",
-			backup: &v1.Backup{
-				Spec: v1.BackupSpec{
-					// cm - shortcut in legacy api group
-					// csr - shortcut in certificates.k8s.io api group
-					// roles - fully qualified in rbac.authorization.k8s.io api group
-					IncludedResources:  []string{"cm", "csr", "roles"},
-					IncludedNamespaces: []string{"a", "b"},
-					ExcludedNamespaces: []string{"c", "d"},
-				},
-			},
-			actions:            []velero.BackupItemAction{new(appliesToErrorAction)},
-			expectedNamespaces: collections.NewIncludesExcludes().Includes("a", "b").Excludes("c", "d"),
-			expectedResources:  collections.NewIncludesExcludes().Includes("configmaps", "certificatesigningrequests.certificates.k8s.io", "roles.rbac.authorization.k8s.io"),
-			expectedHooks:      []resourceHook{},
-			expectedError:      errors.New("error calling AppliesTo"),
-		},
-		{
 			name: "error resolving hooks returns an error",
 			backup: &v1.Backup{
 				Spec: v1.BackupSpec{
@@ -430,27 +203,6 @@ func TestBackup(t *testing.T) {
 			expectedResources:  collections.NewIncludesExcludes().Includes("configmaps", "certificatesigningrequests.certificates.k8s.io", "roles.rbac.authorization.k8s.io"),
 			expectedHooks:      []resourceHook{},
 			expectedError:      errors.New("\"nonexistent-operator\" is not a valid pod selector operator"),
-		},
-		{
-			name: "happy path, no actions, no hooks, no errors",
-			backup: &v1.Backup{
-				Spec: v1.BackupSpec{
-					// cm - shortcut in legacy api group
-					// csr - shortcut in certificates.k8s.io api group
-					// roles - fully qualified in rbac.authorization.k8s.io api group
-					IncludedResources:  []string{"cm", "csr", "roles"},
-					IncludedNamespaces: []string{"a", "b"},
-					ExcludedNamespaces: []string{"c", "d"},
-				},
-			},
-			expectedNamespaces: collections.NewIncludesExcludes().Includes("a", "b").Excludes("c", "d"),
-			expectedResources:  collections.NewIncludesExcludes().Includes("configmaps", "certificatesigningrequests.certificates.k8s.io", "roles.rbac.authorization.k8s.io"),
-			expectedHooks:      []resourceHook{},
-			backupGroupErrors: map[*metav1.APIResourceList]error{
-				v1Group:           nil,
-				certificatesGroup: nil,
-				rbacGroup:         nil,
-			},
 		},
 		{
 			name:               "backupGroup errors",
@@ -587,78 +339,6 @@ func TestBackup(t *testing.T) {
 			assert.NoError(t, err)
 
 		})
-	}
-}
-
-// appliesToErrorAction is a backup item action that always returns
-// an error when AppliesTo() is called.
-type appliesToErrorAction struct{}
-
-func (a *appliesToErrorAction) AppliesTo() (velero.ResourceSelector, error) {
-	return velero.ResourceSelector{}, errors.New("error calling AppliesTo")
-}
-
-func (a *appliesToErrorAction) Execute(item runtime.Unstructured, backup *v1.Backup) (runtime.Unstructured, []velero.ResourceIdentifier, error) {
-	panic("not implemented")
-}
-
-func TestBackupUsesNewCohabitatingResourcesForEachBackup(t *testing.T) {
-	groupBackupperFactory := &mockGroupBackupperFactory{}
-	kb := &kubernetesBackupper{
-		discoveryHelper:       new(velerotest.FakeDiscoveryHelper),
-		groupBackupperFactory: groupBackupperFactory,
-	}
-
-	defer groupBackupperFactory.AssertExpectations(t)
-
-	// assert that newGroupBackupper() is called with the result of cohabitatingResources()
-	// passed as an argument.
-	firstCohabitatingResources := cohabitatingResources()
-	groupBackupperFactory.On("newGroupBackupper",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		kb.discoveryHelper,
-		mock.Anything,
-		firstCohabitatingResources,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-	).Return(&mockGroupBackupper{})
-
-	assert.NoError(t, kb.Backup(velerotest.NewLogger(), &Request{Backup: &v1.Backup{}}, &bytes.Buffer{}, nil, nil))
-
-	// mutate the cohabitatingResources map that was used in the first backup to simulate
-	// the first backup process having done so.
-	for _, value := range firstCohabitatingResources {
-		value.seen = true
-	}
-
-	// assert that on a second backup, newGroupBackupper() is called with the result of
-	// cohabitatingResources() passed as an argument, that the value is not the
-	// same as the mutated firstCohabitatingResources value, and that all of the `seen`
-	// flags are false as they should be for a new instance
-	secondCohabitatingResources := cohabitatingResources()
-	groupBackupperFactory.On("newGroupBackupper",
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		kb.discoveryHelper,
-		mock.Anything,
-		secondCohabitatingResources,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-		mock.Anything,
-	).Return(&mockGroupBackupper{})
-
-	assert.NoError(t, kb.Backup(velerotest.NewLogger(), &Request{Backup: new(v1.Backup)}, new(bytes.Buffer), nil, nil))
-	assert.NotEqual(t, firstCohabitatingResources, secondCohabitatingResources)
-	for _, resource := range secondCohabitatingResources {
-		assert.False(t, resource.seen)
 	}
 }
 

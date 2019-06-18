@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM debian:stretch-slim
+FROM ubuntu:bionic
 
 LABEL maintainer="Steve Kriss <krisss@vmware.com>"
 
@@ -24,7 +24,6 @@ RUN apt-get update && \
     chmod +x /usr/bin/restic && \
     apt-get remove -y wget bzip2 && \
     rm -rf /var/lib/apt/lists/*
-
 
 ADD /bin/linux/amd64/velero /velero
 

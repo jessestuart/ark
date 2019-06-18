@@ -27,7 +27,11 @@ about: Tell us about a problem you are experiencing
 
 **Environment:**
 
+<<<<<<< HEAD
 - Velero version (use `velero version`):
+=======
+- Velero version (use `velero version`): 
+>>>>>>> upstream/master
 - Kubernetes version (use `kubectl version`):
 - Kubernetes installer & version:
 - Cloud provider or hardware configuration:
