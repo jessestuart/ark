@@ -2,7 +2,7 @@
 # Build stage.
 # ==================
 ARG target
-FROM golang:1.11 as builder
+FROM golang:1.12 as builder
 
 ARG goarch
 ENV GOARCH $goarch
@@ -27,7 +27,7 @@ COPY qemu-* /usr/bin/
 COPY --from=builder /velero /velero
 
 ARG goarch
-ADD https://github.com/restic/restic/releases/download/v0.9.4/restic_0.9.4_linux_${goarch}.bz2 /restic.bz2
+ADD https://github.com/restic/restic/releases/download/v0.9.5/restic_0.9.5_linux_${goarch}.bz2 /restic.bz2
 RUN apk add --no-cache --update ca-certificates && \
     bunzip2 restic.bz2 && \
     chmod +x /restic && \
