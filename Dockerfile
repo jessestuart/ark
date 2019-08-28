@@ -11,9 +11,9 @@ ENV CGO_ENABLED 0
 
 ENV image heptio/velero
 WORKDIR /go/src/github.com/${image}
-RUN git clone https://github.com/${image} . && \
-  go build cmd/velero/main.go && \
-  mv ./main /velero
+RUN \
+  git clone --depth=1 https://github.com/${image} . && \
+  go build -o /velero cmd/velero/main.go
 
 # ==================
 # Final stage.

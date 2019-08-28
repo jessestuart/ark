@@ -19,6 +19,7 @@ package backup
 import (
 	"archive/tar"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	kubeerrs "k8s.io/apimachinery/pkg/util/errors"
 
 	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/discovery"
 	"github.com/heptio/velero/pkg/kuberesource"
@@ -45,7 +47,6 @@ import (
 type itemBackupperFactory interface {
 	newItemBackupper(
 		backup *Request,
-		backedUpItems map[itemKey]struct{},
 		podCommandExecutor podexec.PodCommandExecutor,
 		tarWriter tarWriter,
 		dynamicFactory client.DynamicFactory,
@@ -60,7 +61,6 @@ type defaultItemBackupperFactory struct{}
 
 func (f *defaultItemBackupperFactory) newItemBackupper(
 	backupRequest *Request,
-	backedUpItems map[itemKey]struct{},
 	podCommandExecutor podexec.PodCommandExecutor,
 	tarWriter tarWriter,
 	dynamicFactory client.DynamicFactory,
@@ -71,7 +71,6 @@ func (f *defaultItemBackupperFactory) newItemBackupper(
 ) ItemBackupper {
 	ib := &defaultItemBackupper{
 		backupRequest:           backupRequest,
-		backedUpItems:           backedUpItems,
 		tarWriter:               tarWriter,
 		dynamicFactory:          dynamicFactory,
 		discoveryHelper:         discoveryHelper,
@@ -96,7 +95,6 @@ type ItemBackupper interface {
 
 type defaultItemBackupper struct {
 	backupRequest           *Request
-	backedUpItems           map[itemKey]struct{}
 	tarWriter               tarWriter
 	dynamicFactory          client.DynamicFactory
 	discoveryHelper         discovery.Helper
@@ -148,17 +146,18 @@ func (ib *defaultItemBackupper) backupItem(logger logrus.FieldLogger, obj runtim
 		log.Info("Skipping item because it's being deleted.")
 		return nil
 	}
+
 	key := itemKey{
-		resource:  groupResource.String(),
+		resource:  resourceKey(obj),
 		namespace: namespace,
 		name:      name,
 	}
 
-	if _, exists := ib.backedUpItems[key]; exists {
+	if _, exists := ib.backupRequest.BackedUpItems[key]; exists {
 		log.Info("Skipping item because it's already been backed up.")
 		return nil
 	}
-	ib.backedUpItems[key] = struct{}{}
+	ib.backupRequest.BackedUpItems[key] = struct{}{}
 
 	log.Info("Backing up item")
 
@@ -206,6 +205,9 @@ func (ib *defaultItemBackupper) backupItem(logger logrus.FieldLogger, obj runtim
 	if metadata, err = meta.Accessor(obj); err != nil {
 		return errors.WithStack(err)
 	}
+	// update name and namespace in case they were modified in an action
+	name = metadata.GetName()
+	namespace = metadata.GetNamespace()
 
 	if groupResource == kuberesource.PersistentVolumes {
 		if err := ib.takePVSnapshot(obj, log); err != nil {
@@ -214,15 +216,11 @@ func (ib *defaultItemBackupper) backupItem(logger logrus.FieldLogger, obj runtim
 	}
 
 	if groupResource == kuberesource.Pods && pod != nil {
-		// this function will return partial results, so process volumeSnapshots
+		// this function will return partial results, so process podVolumeBackups
 		// even if there are errors.
-		volumeSnapshots, errs := ib.backupPodVolumes(log, pod, resticVolumesToBackup)
+		podVolumeBackups, errs := ib.backupPodVolumes(log, pod, resticVolumesToBackup)
 
-		// annotate the pod with the successful volume snapshots
-		for volume, snapshot := range volumeSnapshots {
-			restic.SetPodSnapshotAnnotation(metadata, volume, snapshot)
-		}
-
+		ib.backupRequest.PodVolumeBackups = append(ib.backupRequest.PodVolumeBackups, podVolumeBackups...)
 		backupErrs = append(backupErrs, errs...)
 	}
 
@@ -266,9 +264,9 @@ func (ib *defaultItemBackupper) backupItem(logger logrus.FieldLogger, obj runtim
 	return nil
 }
 
-// backupPodVolumes triggers restic backups of the specified pod volumes, and returns a map of volume name -> snapshot ID
+// backupPodVolumes triggers restic backups of the specified pod volumes, and returns a list of PodVolumeBackups
 // for volumes that were successfully backed up, and a slice of any errors that were encountered.
-func (ib *defaultItemBackupper) backupPodVolumes(log logrus.FieldLogger, pod *corev1api.Pod, volumes []string) (map[string]string, []error) {
+func (ib *defaultItemBackupper) backupPodVolumes(log logrus.FieldLogger, pod *corev1api.Pod, volumes []string) ([]*velerov1api.PodVolumeBackup, []error) {
 	if len(volumes) == 0 {
 		return nil, nil
 	}
@@ -296,6 +294,11 @@ func (ib *defaultItemBackupper) executeActions(
 
 		if namespace != "" && !action.namespaceIncludesExcludes.ShouldInclude(namespace) {
 			log.Debug("Skipping action because it does not apply to this namespace")
+			continue
+		}
+
+		if namespace == "" && !action.namespaceIncludesExcludes.IncludeEverything() {
+			log.Debug("Skipping action because resource is cluster-scoped and action only applies to specific namespaces")
 			continue
 		}
 
@@ -433,10 +436,12 @@ func (ib *defaultItemBackupper) takePVSnapshot(obj runtime.Unstructured, log log
 
 	log = log.WithField("volumeID", volumeID)
 
-	tags := map[string]string{
-		"velero.io/backup": ib.backupRequest.Name,
-		"velero.io/pv":     pv.Name,
+	tags := ib.backupRequest.GetLabels()
+	if tags == nil {
+		tags = map[string]string{}
 	}
+	tags["velero.io/backup"] = ib.backupRequest.Name
+	tags["velero.io/pv"] = pv.Name
 
 	log.Info("Getting volume information")
 	volumeType, iops, err := volumeSnapshotter.GetVolumeInfo(volumeID, pvFailureDomainZone)
@@ -478,4 +483,11 @@ func volumeSnapshot(backup *api.Backup, volumeName, volumeID, volumeType, az, lo
 			Phase: volume.SnapshotPhaseNew,
 		},
 	}
+}
+
+// resourceKey returns a string representing the object's GroupVersionKind (e.g.
+// apps/v1/Deployment).
+func resourceKey(obj runtime.Unstructured) string {
+	gvk := obj.GetObjectKind().GroupVersionKind()
+	return fmt.Sprintf("%s/%s", gvk.GroupVersion().String(), gvk.Kind)
 }

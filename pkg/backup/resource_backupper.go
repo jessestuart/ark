@@ -40,7 +40,6 @@ type resourceBackupperFactory interface {
 		backupRequest *Request,
 		dynamicFactory client.DynamicFactory,
 		discoveryHelper discovery.Helper,
-		backedUpItems map[itemKey]struct{},
 		cohabitatingResources map[string]*cohabitatingResource,
 		podCommandExecutor podexec.PodCommandExecutor,
 		tarWriter tarWriter,
@@ -57,7 +56,6 @@ func (f *defaultResourceBackupperFactory) newResourceBackupper(
 	backupRequest *Request,
 	dynamicFactory client.DynamicFactory,
 	discoveryHelper discovery.Helper,
-	backedUpItems map[itemKey]struct{},
 	cohabitatingResources map[string]*cohabitatingResource,
 	podCommandExecutor podexec.PodCommandExecutor,
 	tarWriter tarWriter,
@@ -70,7 +68,6 @@ func (f *defaultResourceBackupperFactory) newResourceBackupper(
 		backupRequest:           backupRequest,
 		dynamicFactory:          dynamicFactory,
 		discoveryHelper:         discoveryHelper,
-		backedUpItems:           backedUpItems,
 		cohabitatingResources:   cohabitatingResources,
 		podCommandExecutor:      podCommandExecutor,
 		tarWriter:               tarWriter,
@@ -91,7 +88,6 @@ type defaultResourceBackupper struct {
 	backupRequest           *Request
 	dynamicFactory          client.DynamicFactory
 	discoveryHelper         discovery.Helper
-	backedUpItems           map[itemKey]struct{}
 	cohabitatingResources   map[string]*cohabitatingResource
 	podCommandExecutor      podexec.PodCommandExecutor
 	tarWriter               tarWriter
@@ -156,7 +152,6 @@ func (rb *defaultResourceBackupper) backupResource(group *metav1.APIResourceList
 
 	itemBackupper := rb.itemBackupperFactory.newItemBackupper(
 		rb.backupRequest,
-		rb.backedUpItems,
 		rb.podCommandExecutor,
 		rb.tarWriter,
 		rb.dynamicFactory,
@@ -221,9 +216,9 @@ func (rb *defaultResourceBackupper) backupResource(group *metav1.APIResourceList
 			continue
 		}
 
-		var labelSelector string
+		labelSelector := "velero.io/exclude-from-backup!=true"
 		if selector := rb.backupRequest.Spec.LabelSelector; selector != nil {
-			labelSelector = metav1.FormatLabelSelector(selector)
+			labelSelector = labelSelector + "," + metav1.FormatLabelSelector(selector)
 		}
 
 		log.Info("Listing items")

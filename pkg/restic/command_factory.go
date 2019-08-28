@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Velero contributors.
+Copyright 2018, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -91,13 +91,6 @@ func SnapshotsCommand(repoIdentifier string) *Command {
 	}
 }
 
-func CheckCommand(repoIdentifier string) *Command {
-	return &Command{
-		Command:        "check",
-		RepoIdentifier: repoIdentifier,
-	}
-}
-
 func PruneCommand(repoIdentifier string) *Command {
 	return &Command{
 		Command:        "prune",
@@ -110,5 +103,12 @@ func ForgetCommand(repoIdentifier, snapshotID string) *Command {
 		Command:        "forget",
 		RepoIdentifier: repoIdentifier,
 		Args:           []string{snapshotID},
+	}
+}
+
+func UnlockCommand(repoIdentifier string) *Command {
+	return &Command{
+		Command:        "unlock",
+		RepoIdentifier: repoIdentifier,
 	}
 }

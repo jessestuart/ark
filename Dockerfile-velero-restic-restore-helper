@@ -20,43 +20,26 @@ ENV GOOS linux
 ENV GOARCH $goarch
 ENV CGO_ENABLED 0
 
-ENV image heptio/velero
-WORKDIR /go/src/github.com/${image}
+ENV IMAGE heptio/velero
+WORKDIR /go/src/github.com/${IMAGE}
 
 RUN \
-  git clone --depth=1 https://github.com/${image} . && \
-  go build -o /bin/velero-restic-restore-helper cmd/velero-restic-restore-helper/main.go
+  git clone --depth=1 https://github.com/${IMAGE} . && \
+  go build -o /velero-restic-restore-helper cmd/velero-restic-restore-helper/main.go
 
-# # ==================
-# # Final stage.
-# # ==================
-# FROM $target/alpine
-
-# LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
-
-# COPY qemu-* /usr/bin/
-# COPY --from=builder /velero /velero
-
-# ARG goarch
-# ADD https://github.com/restic/restic/releases/download/v0.9.5/restic_0.9.5_linux_${goarch}.bz2 /restic.bz2
-# RUN apk add --no-cache --update ca-certificates && \
-#   bunzip2 restic.bz2 && \
-#   chmod +x /restic && \
-#   mv /restic /usr/bin/restic
-
-# USER nobody:nobody
-
-# ENTRYPOINT ["/velero"]
-
-# ARG target
+# ==================
+# Final stage.
+# ==================
 FROM $target/ubuntu:disco
+
+RUN mkdir /restores && chmod 0755 /restores
 
 COPY qemu-* /usr/bin/
 
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
-COPY --from=builder /bin/velero-restic-restore-helper /bin/velero-restic-restore-helper
+COPY --from=builder /velero-restic-restore-helper /velero-restic-restore-helper
 
 USER nobody
 
-ENTRYPOINT [ "/bin/velero-restic-restore-helper" ]
+ENTRYPOINT [ "/velero-restic-restore-helper" ]

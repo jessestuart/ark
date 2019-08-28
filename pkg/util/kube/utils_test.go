@@ -20,13 +20,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"k8s.io/api/core/v1"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	kubeinformers "k8s.io/client-go/informers"
 
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	"github.com/heptio/velero/pkg/builder"
+	"github.com/heptio/velero/pkg/test"
+	velerotest "github.com/heptio/velero/pkg/test"
 )
 
 func TestNamespaceAndName(t *testing.T) {
@@ -37,7 +42,7 @@ func TestEnsureNamespaceExistsAndIsReady(t *testing.T) {
 	tests := []struct {
 		name           string
 		expectNSFound  bool
-		nsPhase        v1.NamespacePhase
+		nsPhase        corev1.NamespacePhase
 		nsDeleting     bool
 		expectCreate   bool
 		alreadyExists  bool
@@ -51,7 +56,7 @@ func TestEnsureNamespaceExistsAndIsReady(t *testing.T) {
 		{
 			name:           "namespace found, terminating phase",
 			expectNSFound:  true,
-			nsPhase:        v1.NamespaceTerminating,
+			nsPhase:        corev1.NamespaceTerminating,
 			expectedResult: false,
 		},
 		{
@@ -73,14 +78,14 @@ func TestEnsureNamespaceExistsAndIsReady(t *testing.T) {
 		{
 			name:           "namespace not found initially, create returns already exists error, returned namespace is terminating",
 			alreadyExists:  true,
-			nsPhase:        v1.NamespaceTerminating,
+			nsPhase:        corev1.NamespaceTerminating,
 			expectedResult: false,
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			namespace := &v1.Namespace{
+			namespace := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "test",
 				},
@@ -102,7 +107,7 @@ func TestEnsureNamespaceExistsAndIsReady(t *testing.T) {
 			if test.expectNSFound {
 				nsClient.On("Get", "test", metav1.GetOptions{}).Return(namespace, nil)
 			} else {
-				nsClient.On("Get", "test", metav1.GetOptions{}).Return(&v1.Namespace{}, k8serrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "test"))
+				nsClient.On("Get", "test", metav1.GetOptions{}).Return(&corev1.Namespace{}, k8serrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, "test"))
 			}
 
 			if test.alreadyExists {
@@ -119,4 +124,76 @@ func TestEnsureNamespaceExistsAndIsReady(t *testing.T) {
 		})
 	}
 
+}
+
+type harness struct {
+	*test.APIServer
+
+	log logrus.FieldLogger
+}
+
+func newHarness(t *testing.T) *harness {
+	t.Helper()
+
+	return &harness{
+		APIServer: test.NewAPIServer(t),
+		log:       logrus.StandardLogger(),
+	}
+}
+
+// TestGetVolumeDirectorySuccess tests that the GetVolumeDirectory function
+// returns a volume's name or a volume's name plus '/mount' when a PVC is present.
+func TestGetVolumeDirectorySuccess(t *testing.T) {
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+		pvc  *corev1.PersistentVolumeClaim
+		pv   *corev1.PersistentVolume
+		want string
+	}{
+		{
+			name: "Non-CSI volume with a PVC/PV returns the volume's name",
+			pod:  builder.ForPod("ns-1", "my-pod").Volumes(builder.ForVolume("my-vol").PersistentVolumeClaimSource("my-pvc").Result()).Result(),
+			pvc:  builder.ForPersistentVolumeClaim("ns-1", "my-pvc").VolumeName("a-pv").Result(),
+			pv:   builder.ForPersistentVolume("a-pv").Result(),
+			want: "a-pv",
+		},
+		{
+			name: "CSI volume with a PVC/PV appends '/mount' to the volume name",
+			pod:  builder.ForPod("ns-1", "my-pod").Volumes(builder.ForVolume("my-vol").PersistentVolumeClaimSource("my-pvc").Result()).Result(),
+			pvc:  builder.ForPersistentVolumeClaim("ns-1", "my-pvc").VolumeName("a-pv").Result(),
+			pv:   builder.ForPersistentVolume("a-pv").CSI("csi.test.com", "provider-volume-id").Result(),
+			want: "a-pv/mount",
+		},
+		{
+			name: "CSI volume mounted without a PVC appends '/mount' to the volume name",
+			pod:  builder.ForPod("ns-1", "my-pod").Volumes(builder.ForVolume("my-vol").CSISource("csi.test.com").Result()).Result(),
+			want: "my-vol/mount",
+		},
+		{
+			name: "Non-CSI volume without a PVC returns the volume name",
+			pod:  builder.ForPod("ns-1", "my-pod").Volumes(builder.ForVolume("my-vol").Result()).Result(),
+			want: "my-vol",
+		},
+	}
+
+	for _, tc := range tests {
+		h := newHarness(t)
+
+		pvcInformer := kubeinformers.NewSharedInformerFactoryWithOptions(h.KubeClient, 0, kubeinformers.WithNamespace("ns-1")).Core().V1().PersistentVolumeClaims()
+		pvInformer := kubeinformers.NewSharedInformerFactory(h.KubeClient, 0).Core().V1().PersistentVolumes()
+
+		if tc.pvc != nil {
+			require.NoError(t, pvcInformer.Informer().GetStore().Add(tc.pvc))
+		}
+		if tc.pv != nil {
+			require.NoError(t, pvInformer.Informer().GetStore().Add(tc.pv))
+		}
+
+		// Function under test
+		dir, err := GetVolumeDirectory(tc.pod, tc.pod.Spec.Volumes[0].Name, pvcInformer.Lister(), pvInformer.Lister())
+
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, dir)
+	}
 }

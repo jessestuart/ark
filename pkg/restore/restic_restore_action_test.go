@@ -20,16 +20,26 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	corev1 "k8s.io/api/core/v1"
+	"github.com/stretchr/testify/require"
+	corev1api "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
 
+	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/builder"
 	"github.com/heptio/velero/pkg/buildinfo"
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	velerofake "github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
+	"github.com/heptio/velero/pkg/plugin/velero"
+	velerotest "github.com/heptio/velero/pkg/test"
+	"github.com/heptio/velero/pkg/util/kube"
 )
 
 func TestGetImage(t *testing.T) {
-	configMapWithData := func(key, val string) *corev1.ConfigMap {
-		return &corev1.ConfigMap{
+	configMapWithData := func(key, val string) *corev1api.ConfigMap {
+		return &corev1api.ConfigMap{
 			Data: map[string]string{
 				key: val,
 			},
@@ -44,7 +54,7 @@ func TestGetImage(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		configMap *corev1.ConfigMap
+		configMap *corev1api.ConfigMap
 		want      string
 	}{
 		{
@@ -79,4 +89,135 @@ func TestGetImage(t *testing.T) {
 			assert.Equal(t, test.want, getImage(velerotest.NewLogger(), test.configMap))
 		})
 	}
+}
+
+// TestResticRestoreActionExecute tests the restic restore item action plugin's Execute method.
+func TestResticRestoreActionExecute(t *testing.T) {
+	resourceReqs, _ := kube.ParseResourceRequirements(
+		defaultCPURequestLimit, defaultMemRequestLimit, // requests
+		defaultCPURequestLimit, defaultMemRequestLimit, // limits
+	)
+
+	var (
+		restoreName = "my-restore"
+		backupName  = "test-backup"
+		veleroNs    = "velero"
+	)
+
+	tests := []struct {
+		name             string
+		pod              *corev1api.Pod
+		podVolumeBackups []*velerov1api.PodVolumeBackup
+		want             *corev1api.Pod
+	}{
+		{
+			name: "Restoring pod with no other initContainers adds the restic initContainer",
+			pod: builder.ForPod("ns-1", "my-pod").ObjectMeta(
+				builder.WithAnnotations("snapshot.velero.io/myvol", "")).
+				Result(),
+			want: builder.ForPod("ns-1", "my-pod").
+				ObjectMeta(
+					builder.WithAnnotations("snapshot.velero.io/myvol", "")).
+				InitContainers(
+					newResticInitContainerBuilder(initContainerImage(defaultImageBase), "").
+						Resources(&resourceReqs).
+						VolumeMounts(builder.ForVolumeMount("myvol", "/restores/myvol").Result()).Result()).
+				Result(),
+		},
+		{
+			name: "Restoring pod with other initContainers adds the restic initContainer as the first one",
+			pod: builder.ForPod("ns-1", "my-pod").
+				ObjectMeta(
+					builder.WithAnnotations("snapshot.velero.io/myvol", "")).
+				InitContainers(builder.ForContainer("first-container", "").Result()).
+				Result(),
+			want: builder.ForPod("ns-1", "my-pod").
+				ObjectMeta(
+					builder.WithAnnotations("snapshot.velero.io/myvol", "")).
+				InitContainers(
+					newResticInitContainerBuilder(initContainerImage(defaultImageBase), "").
+						Resources(&resourceReqs).
+						VolumeMounts(builder.ForVolumeMount("myvol", "/restores/myvol").Result()).Result(),
+					builder.ForContainer("first-container", "").Result()).
+				Result(),
+		},
+		{
+			name: "Restoring pod with other initContainers adds the restic initContainer as the first one using PVB to identify the volumes and not annotations",
+			pod: builder.ForPod("ns-1", "my-pod").
+				Volumes(
+					builder.ForVolume("vol-1").PersistentVolumeClaimSource("pvc-1").Result(),
+					builder.ForVolume("vol-2").PersistentVolumeClaimSource("pvc-2").Result(),
+				).
+				ObjectMeta(
+					builder.WithAnnotations("snapshot.velero.io/not-used", "")).
+				InitContainers(builder.ForContainer("first-container", "").Result()).
+				Result(),
+			podVolumeBackups: []*velerov1api.PodVolumeBackup{
+				builder.ForPodVolumeBackup(veleroNs, "pvb-1").
+					PodName("my-pod").
+					Volume("vol-1").
+					ObjectMeta(builder.WithLabels(velerov1api.BackupNameLabel, backupName)).
+					Result(),
+				builder.ForPodVolumeBackup(veleroNs, "pvb-2").
+					PodName("my-pod").
+					Volume("vol-2").
+					ObjectMeta(builder.WithLabels(velerov1api.BackupNameLabel, backupName)).
+					Result(),
+			},
+			want: builder.ForPod("ns-1", "my-pod").
+				Volumes(
+					builder.ForVolume("vol-1").PersistentVolumeClaimSource("pvc-1").Result(),
+					builder.ForVolume("vol-2").PersistentVolumeClaimSource("pvc-2").Result(),
+				).
+				ObjectMeta(
+					builder.WithAnnotations("snapshot.velero.io/not-used", "")).
+				InitContainers(
+					newResticInitContainerBuilder(initContainerImage(defaultImageBase), "").
+						Resources(&resourceReqs).
+						VolumeMounts(builder.ForVolumeMount("vol-1", "/restores/vol-1").Result(), builder.ForVolumeMount("vol-2", "/restores/vol-2").Result()).Result(),
+					builder.ForContainer("first-container", "").Result()).
+				Result(),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clientset := fake.NewSimpleClientset()
+			clientsetVelero := velerofake.NewSimpleClientset()
+
+			for _, podVolumeBackup := range tc.podVolumeBackups {
+				_, err := clientsetVelero.VeleroV1().PodVolumeBackups(veleroNs).Create(podVolumeBackup)
+				require.NoError(t, err)
+			}
+
+			unstructuredMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(tc.pod)
+			require.NoError(t, err)
+
+			input := &velero.RestoreItemActionExecuteInput{
+				Item: &unstructured.Unstructured{
+					Object: unstructuredMap,
+				},
+				Restore: builder.ForRestore(veleroNs, restoreName).
+					Backup(backupName).
+					Phase(velerov1api.RestorePhaseInProgress).
+					Result(),
+			}
+
+			a := NewResticRestoreAction(
+				logrus.StandardLogger(),
+				clientset.CoreV1().ConfigMaps(veleroNs),
+				clientsetVelero.VeleroV1().PodVolumeBackups(veleroNs),
+			)
+
+			// method under test
+			res, err := a.Execute(input)
+			assert.NoError(t, err)
+
+			wantUnstructured, err := runtime.DefaultUnstructuredConverter.ToUnstructured(tc.want)
+			require.NoError(t, err)
+
+			assert.Equal(t, &unstructured.Unstructured{Object: wantUnstructured}, res.UpdatedItem)
+		})
+	}
+
 }

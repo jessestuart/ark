@@ -83,8 +83,16 @@ func (l *ObjectStoreLayout) getBackupLogKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-logs.gz", backup))
 }
 
+func (l *ObjectStoreLayout) getPodVolumeBackupsKey(backup string) string {
+	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-podvolumebackups.json.gz", backup))
+}
+
 func (l *ObjectStoreLayout) getBackupVolumeSnapshotsKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-volumesnapshots.json.gz", backup))
+}
+
+func (l *ObjectStoreLayout) getBackupResourceListKey(backup string) string {
+	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-resource-list.json.gz", backup))
 }
 
 func (l *ObjectStoreLayout) getRestoreLogKey(restore string) string {

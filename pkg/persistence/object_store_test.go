@@ -35,10 +35,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/builder"
 	"github.com/heptio/velero/pkg/cloudprovider"
 	cloudprovidermocks "github.com/heptio/velero/pkg/cloudprovider/mocks"
+	"github.com/heptio/velero/pkg/plugin/velero"
+	velerotest "github.com/heptio/velero/pkg/test"
 	"github.com/heptio/velero/pkg/util/encode"
-	velerotest "github.com/heptio/velero/pkg/util/test"
 	"github.com/heptio/velero/pkg/volume"
 )
 
@@ -170,8 +172,8 @@ func TestListBackups(t *testing.T) {
 		{
 			name: "normal case",
 			storageData: map[string][]byte{
-				"backups/backup-1/velero-backup.json": encodeToBytes(&velerov1api.Backup{ObjectMeta: metav1.ObjectMeta{Name: "backup-1"}}),
-				"backups/backup-2/velero-backup.json": encodeToBytes(&velerov1api.Backup{ObjectMeta: metav1.ObjectMeta{Name: "backup-2"}}),
+				"backups/backup-1/velero-backup.json": encodeToBytes(builder.ForBackup("", "backup-1").Result()),
+				"backups/backup-2/velero-backup.json": encodeToBytes(builder.ForBackup("", "backup-2").Result()),
 			},
 			expectedRes: []string{"backup-1", "backup-2"},
 		},
@@ -179,8 +181,8 @@ func TestListBackups(t *testing.T) {
 			name:   "normal case with backup store prefix",
 			prefix: "velero-backups/",
 			storageData: map[string][]byte{
-				"velero-backups/backups/backup-1/velero-backup.json": encodeToBytes(&velerov1api.Backup{ObjectMeta: metav1.ObjectMeta{Name: "backup-1"}}),
-				"velero-backups/backups/backup-2/velero-backup.json": encodeToBytes(&velerov1api.Backup{ObjectMeta: metav1.ObjectMeta{Name: "backup-2"}}),
+				"velero-backups/backups/backup-1/velero-backup.json": encodeToBytes(builder.ForBackup("", "backup-1").Result()),
+				"velero-backups/backups/backup-2/velero-backup.json": encodeToBytes(builder.ForBackup("", "backup-2").Result()),
 			},
 			expectedRes: []string{"backup-1", "backup-2"},
 		},
@@ -208,54 +210,66 @@ func TestListBackups(t *testing.T) {
 
 func TestPutBackup(t *testing.T) {
 	tests := []struct {
-		name         string
-		prefix       string
-		metadata     io.Reader
-		contents     io.Reader
-		log          io.Reader
-		snapshots    io.Reader
-		expectedErr  string
-		expectedKeys []string
+		name            string
+		prefix          string
+		metadata        io.Reader
+		contents        io.Reader
+		log             io.Reader
+		podVolumeBackup io.Reader
+		snapshots       io.Reader
+		resourceList    io.Reader
+		expectedErr     string
+		expectedKeys    []string
 	}{
 		{
-			name:        "normal case",
-			metadata:    newStringReadSeeker("metadata"),
-			contents:    newStringReadSeeker("contents"),
-			log:         newStringReadSeeker("log"),
-			snapshots:   newStringReadSeeker("snapshots"),
-			expectedErr: "",
+			name:            "normal case",
+			metadata:        newStringReadSeeker("metadata"),
+			contents:        newStringReadSeeker("contents"),
+			log:             newStringReadSeeker("log"),
+			podVolumeBackup: newStringReadSeeker("podVolumeBackup"),
+			snapshots:       newStringReadSeeker("snapshots"),
+			resourceList:    newStringReadSeeker("resourceList"),
+			expectedErr:     "",
 			expectedKeys: []string{
 				"backups/backup-1/velero-backup.json",
 				"backups/backup-1/backup-1.tar.gz",
 				"backups/backup-1/backup-1-logs.gz",
+				"backups/backup-1/backup-1-podvolumebackups.json.gz",
 				"backups/backup-1/backup-1-volumesnapshots.json.gz",
+				"backups/backup-1/backup-1-resource-list.json.gz",
 				"metadata/revision",
 			},
 		},
 		{
-			name:        "normal case with backup store prefix",
-			prefix:      "prefix-1/",
-			metadata:    newStringReadSeeker("metadata"),
-			contents:    newStringReadSeeker("contents"),
-			log:         newStringReadSeeker("log"),
-			snapshots:   newStringReadSeeker("snapshots"),
-			expectedErr: "",
+			name:            "normal case with backup store prefix",
+			prefix:          "prefix-1/",
+			metadata:        newStringReadSeeker("metadata"),
+			contents:        newStringReadSeeker("contents"),
+			log:             newStringReadSeeker("log"),
+			podVolumeBackup: newStringReadSeeker("podVolumeBackup"),
+			snapshots:       newStringReadSeeker("snapshots"),
+			resourceList:    newStringReadSeeker("resourceList"),
+			expectedErr:     "",
 			expectedKeys: []string{
 				"prefix-1/backups/backup-1/velero-backup.json",
 				"prefix-1/backups/backup-1/backup-1.tar.gz",
 				"prefix-1/backups/backup-1/backup-1-logs.gz",
+				"prefix-1/backups/backup-1/backup-1-podvolumebackups.json.gz",
 				"prefix-1/backups/backup-1/backup-1-volumesnapshots.json.gz",
+				"prefix-1/backups/backup-1/backup-1-resource-list.json.gz",
 				"prefix-1/metadata/revision",
 			},
 		},
 		{
-			name:         "error on metadata upload does not upload data",
-			metadata:     new(errorReader),
-			contents:     newStringReadSeeker("contents"),
-			log:          newStringReadSeeker("log"),
-			snapshots:    newStringReadSeeker("snapshots"),
-			expectedErr:  "error readers return errors",
-			expectedKeys: []string{"backups/backup-1/backup-1-logs.gz"},
+			name:            "error on metadata upload does not upload data",
+			metadata:        new(errorReader),
+			contents:        newStringReadSeeker("contents"),
+			log:             newStringReadSeeker("log"),
+			podVolumeBackup: newStringReadSeeker("podVolumeBackup"),
+			snapshots:       newStringReadSeeker("snapshots"),
+			resourceList:    newStringReadSeeker("resourceList"),
+			expectedErr:     "error readers return errors",
+			expectedKeys:    []string{"backups/backup-1/backup-1-logs.gz"},
 		},
 		{
 			name:         "error on data upload deletes metadata",
@@ -263,31 +277,38 @@ func TestPutBackup(t *testing.T) {
 			contents:     new(errorReader),
 			log:          newStringReadSeeker("log"),
 			snapshots:    newStringReadSeeker("snapshots"),
+			resourceList: newStringReadSeeker("resourceList"),
 			expectedErr:  "error readers return errors",
 			expectedKeys: []string{"backups/backup-1/backup-1-logs.gz"},
 		},
 		{
-			name:        "error on log upload is ok",
-			metadata:    newStringReadSeeker("foo"),
-			contents:    newStringReadSeeker("bar"),
-			log:         new(errorReader),
-			snapshots:   newStringReadSeeker("snapshots"),
-			expectedErr: "",
+			name:            "error on log upload is ok",
+			metadata:        newStringReadSeeker("foo"),
+			contents:        newStringReadSeeker("bar"),
+			log:             new(errorReader),
+			podVolumeBackup: newStringReadSeeker("podVolumeBackup"),
+			snapshots:       newStringReadSeeker("snapshots"),
+			resourceList:    newStringReadSeeker("resourceList"),
+			expectedErr:     "",
 			expectedKeys: []string{
 				"backups/backup-1/velero-backup.json",
 				"backups/backup-1/backup-1.tar.gz",
+				"backups/backup-1/backup-1-podvolumebackups.json.gz",
 				"backups/backup-1/backup-1-volumesnapshots.json.gz",
+				"backups/backup-1/backup-1-resource-list.json.gz",
 				"metadata/revision",
 			},
 		},
 		{
-			name:         "don't upload data when metadata is nil",
-			metadata:     nil,
-			contents:     newStringReadSeeker("contents"),
-			log:          newStringReadSeeker("log"),
-			snapshots:    newStringReadSeeker("snapshots"),
-			expectedErr:  "",
-			expectedKeys: []string{"backups/backup-1/backup-1-logs.gz"},
+			name:            "don't upload data when metadata is nil",
+			metadata:        nil,
+			contents:        newStringReadSeeker("contents"),
+			log:             newStringReadSeeker("log"),
+			podVolumeBackup: newStringReadSeeker("podVolumeBackup"),
+			snapshots:       newStringReadSeeker("snapshots"),
+			resourceList:    newStringReadSeeker("resourceList"),
+			expectedErr:     "",
+			expectedKeys:    []string{"backups/backup-1/backup-1-logs.gz"},
 		},
 	}
 
@@ -295,7 +316,16 @@ func TestPutBackup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			harness := newObjectBackupStoreTestHarness("foo", tc.prefix)
 
-			err := harness.PutBackup("backup-1", tc.metadata, tc.contents, tc.log, tc.snapshots)
+			backupInfo := BackupInfo{
+				Name:               "backup-1",
+				Metadata:           tc.metadata,
+				Contents:           tc.contents,
+				Log:                tc.log,
+				PodVolumeBackups:   tc.podVolumeBackup,
+				VolumeSnapshots:    tc.snapshots,
+				BackupResourceList: tc.resourceList,
+			}
+			err := harness.PutBackup(backupInfo)
 
 			velerotest.AssertErrorMatches(t, tc.expectedErr, err)
 			assert.Len(t, harness.objectStore.Data[harness.bucket], len(tc.expectedKeys))
@@ -318,16 +348,7 @@ func TestGetBackupMetadata(t *testing.T) {
 			name:       "metadata file returns correctly",
 			backupName: "foo",
 			key:        "backups/foo/velero-backup.json",
-			obj: &velerov1api.Backup{
-				TypeMeta: metav1.TypeMeta{
-					Kind:       "Backup",
-					APIVersion: velerov1api.SchemeGroupVersion.String(),
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: velerov1api.DefaultNamespace,
-					Name:      "foo",
-				},
-			},
+			obj:        builder.ForBackup(velerov1api.DefaultNamespace, "foo").Result(),
 		},
 		{
 			name:       "no metadata file returns an error",
@@ -471,60 +492,87 @@ func TestDeleteBackup(t *testing.T) {
 
 func TestGetDownloadURL(t *testing.T) {
 	tests := []struct {
-		name        string
-		targetKind  velerov1api.DownloadTargetKind
-		targetName  string
-		prefix      string
-		expectedKey string
+		name              string
+		targetName        string
+		expectedKeyByKind map[velerov1api.DownloadTargetKind]string
+		prefix            string
 	}{
 		{
-			name:        "backup contents",
-			targetKind:  velerov1api.DownloadTargetKindBackupContents,
-			targetName:  "my-backup",
-			expectedKey: "backups/my-backup/my-backup.tar.gz",
+			name:       "backup",
+			targetName: "my-backup",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindBackupContents:        "backups/my-backup/my-backup.tar.gz",
+				velerov1api.DownloadTargetKindBackupLog:             "backups/my-backup/my-backup-logs.gz",
+				velerov1api.DownloadTargetKindBackupVolumeSnapshots: "backups/my-backup/my-backup-volumesnapshots.json.gz",
+				velerov1api.DownloadTargetKindBackupResourceList:    "backups/my-backup/my-backup-resource-list.json.gz",
+			},
 		},
 		{
-			name:        "backup log",
-			targetKind:  velerov1api.DownloadTargetKindBackupLog,
-			targetName:  "my-backup",
-			expectedKey: "backups/my-backup/my-backup-logs.gz",
+			name:       "backup with prefix",
+			targetName: "my-backup",
+			prefix:     "velero-backups/",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindBackupContents:        "velero-backups/backups/my-backup/my-backup.tar.gz",
+				velerov1api.DownloadTargetKindBackupLog:             "velero-backups/backups/my-backup/my-backup-logs.gz",
+				velerov1api.DownloadTargetKindBackupVolumeSnapshots: "velero-backups/backups/my-backup/my-backup-volumesnapshots.json.gz",
+				velerov1api.DownloadTargetKindBackupResourceList:    "velero-backups/backups/my-backup/my-backup-resource-list.json.gz",
+			},
 		},
 		{
-			name:        "scheduled backup contents",
-			targetKind:  velerov1api.DownloadTargetKindBackupContents,
-			targetName:  "my-backup-20170913154901",
-			expectedKey: "backups/my-backup-20170913154901/my-backup-20170913154901.tar.gz",
+			name:       "backup with multiple dashes",
+			targetName: "b-cool-20170913154901-20170913154902",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindBackupContents:        "backups/b-cool-20170913154901-20170913154902/b-cool-20170913154901-20170913154902.tar.gz",
+				velerov1api.DownloadTargetKindBackupLog:             "backups/b-cool-20170913154901-20170913154902/b-cool-20170913154901-20170913154902-logs.gz",
+				velerov1api.DownloadTargetKindBackupVolumeSnapshots: "backups/b-cool-20170913154901-20170913154902/b-cool-20170913154901-20170913154902-volumesnapshots.json.gz",
+				velerov1api.DownloadTargetKindBackupResourceList:    "backups/b-cool-20170913154901-20170913154902/b-cool-20170913154901-20170913154902-resource-list.json.gz",
+			},
 		},
 		{
-			name:        "scheduled backup log",
-			targetKind:  velerov1api.DownloadTargetKindBackupLog,
-			targetName:  "my-backup-20170913154901",
-			expectedKey: "backups/my-backup-20170913154901/my-backup-20170913154901-logs.gz",
+			name:       "scheduled backup",
+			targetName: "my-backup-20170913154901",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindBackupContents:        "backups/my-backup-20170913154901/my-backup-20170913154901.tar.gz",
+				velerov1api.DownloadTargetKindBackupLog:             "backups/my-backup-20170913154901/my-backup-20170913154901-logs.gz",
+				velerov1api.DownloadTargetKindBackupVolumeSnapshots: "backups/my-backup-20170913154901/my-backup-20170913154901-volumesnapshots.json.gz",
+				velerov1api.DownloadTargetKindBackupResourceList:    "backups/my-backup-20170913154901/my-backup-20170913154901-resource-list.json.gz",
+			},
 		},
 		{
-			name:        "backup contents with backup store prefix",
-			targetKind:  velerov1api.DownloadTargetKindBackupContents,
-			targetName:  "my-backup",
-			prefix:      "velero-backups/",
-			expectedKey: "velero-backups/backups/my-backup/my-backup.tar.gz",
+			name:       "scheduled backup with prefix",
+			targetName: "my-backup-20170913154901",
+			prefix:     "velero-backups/",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindBackupContents:        "velero-backups/backups/my-backup-20170913154901/my-backup-20170913154901.tar.gz",
+				velerov1api.DownloadTargetKindBackupLog:             "velero-backups/backups/my-backup-20170913154901/my-backup-20170913154901-logs.gz",
+				velerov1api.DownloadTargetKindBackupVolumeSnapshots: "velero-backups/backups/my-backup-20170913154901/my-backup-20170913154901-volumesnapshots.json.gz",
+				velerov1api.DownloadTargetKindBackupResourceList:    "velero-backups/backups/my-backup-20170913154901/my-backup-20170913154901-resource-list.json.gz",
+			},
 		},
 		{
-			name:        "restore log",
-			targetKind:  velerov1api.DownloadTargetKindRestoreLog,
-			targetName:  "b-20170913154901",
-			expectedKey: "restores/b-20170913154901/restore-b-20170913154901-logs.gz",
+			name:       "restore",
+			targetName: "my-backup",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindRestoreLog:     "restores/my-backup/restore-my-backup-logs.gz",
+				velerov1api.DownloadTargetKindRestoreResults: "restores/my-backup/restore-my-backup-results.gz",
+			},
 		},
 		{
-			name:        "restore results",
-			targetKind:  velerov1api.DownloadTargetKindRestoreResults,
-			targetName:  "b-20170913154901",
-			expectedKey: "restores/b-20170913154901/restore-b-20170913154901-results.gz",
+			name:       "restore with prefix",
+			targetName: "my-backup",
+			prefix:     "velero-backups/",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindRestoreLog:     "velero-backups/restores/my-backup/restore-my-backup-logs.gz",
+				velerov1api.DownloadTargetKindRestoreResults: "velero-backups/restores/my-backup/restore-my-backup-results.gz",
+			},
 		},
 		{
-			name:        "restore results - backup has multiple dashes (e.g. restore of scheduled backup)",
-			targetKind:  velerov1api.DownloadTargetKindRestoreResults,
-			targetName:  "b-cool-20170913154901-20170913154902",
-			expectedKey: "restores/b-cool-20170913154901-20170913154902/restore-b-cool-20170913154901-20170913154902-results.gz",
+			name:       "restore with multiple dashes",
+			targetName: "b-cool-20170913154901-20170913154902",
+			expectedKeyByKind: map[velerov1api.DownloadTargetKind]string{
+				velerov1api.DownloadTargetKindRestoreLog:     "restores/b-cool-20170913154901-20170913154902/restore-b-cool-20170913154901-20170913154902-logs.gz",
+				velerov1api.DownloadTargetKindRestoreResults: "restores/b-cool-20170913154901-20170913154902/restore-b-cool-20170913154901-20170913154902-results.gz",
+			},
 		},
 	}
 
@@ -532,11 +580,99 @@ func TestGetDownloadURL(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			harness := newObjectBackupStoreTestHarness("test-bucket", test.prefix)
 
-			require.NoError(t, harness.objectStore.PutObject("test-bucket", test.expectedKey, newStringReadSeeker("foo")))
+			for kind, expectedKey := range test.expectedKeyByKind {
+				t.Run(string(kind), func(t *testing.T) {
+					require.NoError(t, harness.objectStore.PutObject("test-bucket", expectedKey, newStringReadSeeker("foo")))
 
-			url, err := harness.GetDownloadURL(velerov1api.DownloadTarget{Kind: test.targetKind, Name: test.targetName})
-			require.NoError(t, err)
-			assert.Equal(t, "a-url", url)
+					url, err := harness.GetDownloadURL(velerov1api.DownloadTarget{Kind: kind, Name: test.targetName})
+					require.NoError(t, err)
+					assert.Equal(t, "a-url", url)
+				})
+			}
+		})
+	}
+}
+
+type objectStoreGetter map[string]velero.ObjectStore
+
+func (osg objectStoreGetter) GetObjectStore(provider string) (velero.ObjectStore, error) {
+	res, ok := osg[provider]
+	if !ok {
+		return nil, errors.New("object store not found")
+	}
+
+	return res, nil
+}
+
+// TestNewObjectBackupStore runs the NewObjectBackupStore constructor and ensures
+// that an ObjectBackupStore is constructed correctly or an appropriate error is
+// returned.
+func TestNewObjectBackupStore(t *testing.T) {
+	tests := []struct {
+		name              string
+		location          *velerov1api.BackupStorageLocation
+		objectStoreGetter objectStoreGetter
+		wantBucket        string
+		wantPrefix        string
+		wantErr           string
+	}{
+		{
+			name:     "location with no ObjectStorage field results in an error",
+			location: new(velerov1api.BackupStorageLocation),
+			wantErr:  "backup storage location does not use object storage",
+		},
+		{
+			name:     "location with no Provider field results in an error",
+			location: builder.ForBackupStorageLocation("", "").Bucket("").Result(),
+			wantErr:  "object storage provider name must not be empty",
+		},
+		{
+			name:     "location with a Bucket field with a '/' in the middle results in an error",
+			location: builder.ForBackupStorageLocation("", "").Provider("provider-1").Bucket("invalid/bucket").Result(),
+			wantErr:  "backup storage location's bucket name \"invalid/bucket\" must not contain a '/' (if using a prefix, put it in the 'Prefix' field instead)",
+		},
+		{
+			name:     "when Bucket has a leading and trailing slash, they are both stripped",
+			location: builder.ForBackupStorageLocation("", "").Provider("provider-1").Bucket("/bucket/").Result(),
+			objectStoreGetter: objectStoreGetter{
+				"provider-1": cloudprovider.NewInMemoryObjectStore("bucket"),
+			},
+			wantBucket: "bucket",
+		},
+		{
+			name:     "when Prefix has a leading and trailing slash, the leading slash is stripped and the trailing slash is left",
+			location: builder.ForBackupStorageLocation("", "").Provider("provider-1").Bucket("bucket").Prefix("/prefix/").Result(),
+			objectStoreGetter: objectStoreGetter{
+				"provider-1": cloudprovider.NewInMemoryObjectStore("bucket"),
+			},
+			wantBucket: "bucket",
+			wantPrefix: "prefix/",
+		},
+		{
+			name:     "when Prefix has no leading or trailing slash, a trailing slash is added",
+			location: builder.ForBackupStorageLocation("", "").Provider("provider-1").Bucket("bucket").Prefix("prefix").Result(),
+			objectStoreGetter: objectStoreGetter{
+				"provider-1": cloudprovider.NewInMemoryObjectStore("bucket"),
+			},
+			wantBucket: "bucket",
+			wantPrefix: "prefix/",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := NewObjectBackupStore(tc.location, tc.objectStoreGetter, velerotest.NewLogger())
+			if tc.wantErr != "" {
+				require.Equal(t, tc.wantErr, err.Error())
+			} else {
+				require.Nil(t, err)
+
+				store, ok := res.(*objectBackupStore)
+				require.True(t, ok)
+
+				assert.Equal(t, tc.wantBucket, store.bucket)
+				assert.Equal(t, tc.wantPrefix, store.layout.rootPrefix)
+			}
 		})
 	}
 }

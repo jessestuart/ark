@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Velero contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,7 +19,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/pprof"
@@ -32,7 +31,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeerrs "k8s.io/apimachinery/pkg/util/errors"
@@ -119,6 +117,7 @@ type serverConfig struct {
 	clientQPS                                                               float32
 	clientBurst                                                             int
 	profilerAddress                                                         string
+	formatFlag                                                              *logging.FormatFlag
 }
 
 type controllerRunInfo struct {
@@ -126,7 +125,7 @@ type controllerRunInfo struct {
 	numWorkers int
 }
 
-func NewCommand() *cobra.Command {
+func NewCommand(f client.Factory) *cobra.Command {
 	var (
 		volumeSnapshotLocations = flag.NewMap().WithKeyValueDelimiter(":")
 		logLevelFlag            = logging.LogLevelFlag(logrus.InfoLevel)
@@ -143,6 +142,7 @@ func NewCommand() *cobra.Command {
 			clientBurst:                    defaultClientBurst,
 			profilerAddress:                defaultProfilerAddress,
 			resourceTerminatingTimeout:     defaultResourceTerminatingTimeout,
+			formatFlag:                     logging.NewFormatFlag(),
 		}
 	)
 
@@ -157,33 +157,25 @@ func NewCommand() *cobra.Command {
 			log.SetOutput(os.Stdout)
 
 			logLevel := logLevelFlag.Parse()
+			format := config.formatFlag.Parse()
+
 			// Make sure we log to stdout so cloud log dashboards don't show this as an error.
 			logrus.SetOutput(os.Stdout)
-			logrus.Infof("setting log-level to %s", strings.ToUpper(logLevel.String()))
 
 			// Velero's DefaultLogger logs to stdout, so all is good there.
-			logger := logging.DefaultLogger(logLevel)
-			logger.Infof("Starting Velero server %s (%s)", buildinfo.Version, buildinfo.FormattedGitSHA())
+			logger := logging.DefaultLogger(logLevel, format)
 
-			// NOTE: the namespace flag is bound to velero's persistent flags when the root velero command
-			// creates the client Factory and binds the Factory's flags. We're not using a Factory here in
-			// the server because the Factory gets its basename set at creation time, and the basename is
-			// used to construct the user-agent for clients. Also, the Factory's Namespace() method uses
-			// the client config file to determine the appropriate namespace to use, and that isn't
-			// applicable to the server (it uses the method directly below instead). We could potentially
-			// add a SetBasename() method to the Factory, and tweak how Namespace() works, if we wanted to
-			// have the server use the Factory.
-			namespaceFlag := c.Flag("namespace")
-			if namespaceFlag == nil {
-				cmd.CheckError(errors.New("unable to look up namespace flag"))
-			}
-			namespace := getServerNamespace(namespaceFlag)
+			logger.Infof("setting log-level to %s", strings.ToUpper(logLevel.String()))
+
+			logger.Infof("Starting Velero server %s (%s)", buildinfo.Version, buildinfo.FormattedGitSHA())
 
 			if volumeSnapshotLocations.Data() != nil {
 				config.defaultVolumeSnapshotLocations = volumeSnapshotLocations.Data()
 			}
 
-			s, err := newServer(namespace, fmt.Sprintf("%s-%s", c.Parent().Name(), c.Name()), config, logger)
+			f.SetBasename(fmt.Sprintf("%s-%s", c.Parent().Name(), c.Name()))
+
+			s, err := newServer(f, config, logger)
 			cmd.CheckError(err)
 
 			cmd.CheckError(s.run())
@@ -191,6 +183,7 @@ func NewCommand() *cobra.Command {
 	}
 
 	command.Flags().Var(logLevelFlag, "log-level", fmt.Sprintf("the level at which to log. Valid values are %s.", strings.Join(logLevelFlag.AllowedValues(), ", ")))
+	command.Flags().Var(config.formatFlag, "log-format", fmt.Sprintf("the format for log output. Valid values are %s.", strings.Join(config.formatFlag.AllowedValues(), ", ")))
 	command.Flags().StringVar(&config.pluginDir, "plugin-dir", config.pluginDir, "directory containing Velero plugins")
 	command.Flags().StringVar(&config.metricsAddress, "metrics-address", config.metricsAddress, "the address to expose prometheus metrics")
 	command.Flags().DurationVar(&config.backupSyncPeriod, "backup-sync-period", config.backupSyncPeriod, "how often to ensure all Velero backups in object storage exist as Backup API objects in the cluster")
@@ -207,20 +200,6 @@ func NewCommand() *cobra.Command {
 	command.Flags().DurationVar(&config.defaultBackupTTL, "default-backup-ttl", config.defaultBackupTTL, "how long to wait by default before backups can be garbage collected")
 
 	return command
-}
-
-func getServerNamespace(namespaceFlag *pflag.Flag) string {
-	if namespaceFlag.Changed {
-		return namespaceFlag.Value.String()
-	}
-
-	if data, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
-		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
-			return ns
-		}
-	}
-
-	return api.DefaultNamespace
 }
 
 type server struct {
@@ -244,29 +223,30 @@ type server struct {
 	config                serverConfig
 }
 
-func newServer(namespace, baseName string, config serverConfig, logger *logrus.Logger) (*server, error) {
-	clientConfig, err := client.Config("", "", baseName)
-	if err != nil {
-		return nil, err
-	}
+func newServer(f client.Factory, config serverConfig, logger *logrus.Logger) (*server, error) {
 	if config.clientQPS < 0.0 {
 		return nil, errors.New("client-qps must be positive")
 	}
-	clientConfig.QPS = config.clientQPS
+	f.SetClientQPS(config.clientQPS)
 
 	if config.clientBurst <= 0 {
 		return nil, errors.New("client-burst must be positive")
 	}
-	clientConfig.Burst = config.clientBurst
+	f.SetClientBurst(config.clientBurst)
 
-	kubeClient, err := kubernetes.NewForConfig(clientConfig)
+	kubeClient, err := f.KubeClient()
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
-	veleroClient, err := clientset.NewForConfig(clientConfig)
+	veleroClient, err := f.Client()
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
+	}
+
+	dynamicClient, err := f.DynamicClient()
+	if err != nil {
+		return nil, err
 	}
 
 	pluginRegistry := clientmgmt.NewRegistry(config.pluginDir, logger, logger.Level)
@@ -278,22 +258,22 @@ func newServer(namespace, baseName string, config serverConfig, logger *logrus.L
 		return nil, err
 	}
 
-	dynamicClient, err := dynamic.NewForConfig(clientConfig)
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	clientConfig, err := f.ClientConfig()
 	if err != nil {
 		return nil, err
 	}
 
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	s := &server{
-		namespace:             namespace,
+		namespace:             f.Namespace(),
 		metricsAddress:        config.metricsAddress,
 		kubeClientConfig:      clientConfig,
 		kubeClient:            kubeClient,
 		veleroClient:          veleroClient,
 		discoveryClient:       veleroClient.Discovery(),
 		dynamicClient:         dynamicClient,
-		sharedInformerFactory: informers.NewSharedInformerFactoryWithOptions(veleroClient, 0, informers.WithNamespace(namespace)),
+		sharedInformerFactory: informers.NewSharedInformerFactoryWithOptions(veleroClient, 0, informers.WithNamespace(f.Namespace())),
 		ctx:                   ctx,
 		cancelFunc:            cancelFunc,
 		logger:                logger,
@@ -559,8 +539,10 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 		backupSyncContoller := controller.NewBackupSyncController(
 			s.veleroClient.VeleroV1(),
 			s.veleroClient.VeleroV1(),
+			s.veleroClient.VeleroV1(),
 			s.sharedInformerFactory.Velero().V1().Backups(),
 			s.sharedInformerFactory.Velero().V1().BackupStorageLocations(),
+			s.sharedInformerFactory.Velero().V1().PodVolumeBackups(),
 			s.config.backupSyncPeriod,
 			s.namespace,
 			s.config.defaultBackupLocation,
@@ -600,6 +582,7 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 			s.sharedInformerFactory.Velero().V1().VolumeSnapshotLocations(),
 			defaultVolumeSnapshotLocations,
 			s.metrics,
+			s.config.formatFlag.Parse(),
 		)
 
 		return controllerRunInfo{
@@ -690,6 +673,7 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 			newPluginManager,
 			s.config.defaultBackupLocation,
 			s.metrics,
+			s.config.formatFlag.Parse(),
 		)
 
 		return controllerRunInfo{

@@ -32,8 +32,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
+	velerotest "github.com/heptio/velero/pkg/test"
 	"github.com/heptio/velero/pkg/util/collections"
-	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
 type mockItemHookHandler struct {
@@ -693,4 +693,12 @@ func TestResourceHookApplicableTo(t *testing.T) {
 			assert.Equal(t, test.expected, result)
 		})
 	}
+}
+
+func parseLabelSelectorOrDie(s string) labels.Selector {
+	ret, err := labels.Parse(s)
+	if err != nil {
+		panic(err)
+	}
+	return ret
 }

@@ -26,13 +26,18 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/builder"
 	cloudprovidermocks "github.com/heptio/velero/pkg/cloudprovider/mocks"
 	"github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
 	"github.com/heptio/velero/pkg/plugin/velero"
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	velerotest "github.com/heptio/velero/pkg/test"
 	"github.com/heptio/velero/pkg/volume"
 )
+
+func defaultBackup() *builder.BackupBuilder {
+	return builder.ForBackup(api.DefaultNamespace, "backup-1")
+}
 
 func TestExecutePVAction_NoSnapshotRestores(t *testing.T) {
 	tests := []struct {
@@ -48,46 +53,46 @@ func TestExecutePVAction_NoSnapshotRestores(t *testing.T) {
 		{
 			name:        "no name should error",
 			obj:         NewTestUnstructured().WithMetadata().Unstructured,
-			restore:     velerotest.NewDefaultTestRestore().Restore,
+			restore:     builder.ForRestore(api.DefaultNamespace, "").Result(),
 			expectedErr: true,
 		},
 		{
 			name:        "no spec should error",
 			obj:         NewTestUnstructured().WithName("pv-1").Unstructured,
-			restore:     velerotest.NewDefaultTestRestore().Restore,
+			restore:     builder.ForRestore(api.DefaultNamespace, "").Result(),
 			expectedErr: true,
 		},
 		{
 			name:        "ensure spec.claimRef is deleted",
 			obj:         NewTestUnstructured().WithName("pv-1").WithAnnotations("a", "b").WithSpec("claimRef", "someOtherField").Unstructured,
-			restore:     velerotest.NewDefaultTestRestore().WithRestorePVs(false).Restore,
-			backup:      velerotest.NewTestBackup().WithName("backup1").WithPhase(api.BackupPhaseInProgress).Backup,
+			restore:     builder.ForRestore(api.DefaultNamespace, "").RestorePVs(false).Result(),
+			backup:      defaultBackup().Phase(api.BackupPhaseInProgress).Result(),
 			expectedRes: NewTestUnstructured().WithAnnotations("a", "b").WithName("pv-1").WithSpec("someOtherField").Unstructured,
 		},
 		{
 			name:        "ensure spec.storageClassName is retained",
 			obj:         NewTestUnstructured().WithName("pv-1").WithAnnotations("a", "b").WithSpec("storageClassName", "someOtherField").Unstructured,
-			restore:     velerotest.NewDefaultTestRestore().WithRestorePVs(false).Restore,
-			backup:      velerotest.NewTestBackup().WithName("backup1").WithPhase(api.BackupPhaseInProgress).Backup,
+			restore:     builder.ForRestore(api.DefaultNamespace, "").RestorePVs(false).Result(),
+			backup:      defaultBackup().Phase(api.BackupPhaseInProgress).Result(),
 			expectedRes: NewTestUnstructured().WithAnnotations("a", "b").WithName("pv-1").WithSpec("storageClassName", "someOtherField").Unstructured,
 		},
 		{
 			name:        "if backup.spec.snapshotVolumes is false, ignore restore.spec.restorePVs and return early",
 			obj:         NewTestUnstructured().WithName("pv-1").WithAnnotations("a", "b").WithSpec("claimRef", "storageClassName", "someOtherField").Unstructured,
-			restore:     velerotest.NewDefaultTestRestore().WithRestorePVs(true).Restore,
-			backup:      velerotest.NewTestBackup().WithName("backup1").WithPhase(api.BackupPhaseInProgress).WithSnapshotVolumes(false).Backup,
+			restore:     builder.ForRestore(api.DefaultNamespace, "").RestorePVs(true).Result(),
+			backup:      defaultBackup().Phase(api.BackupPhaseInProgress).SnapshotVolumes(false).Result(),
 			expectedRes: NewTestUnstructured().WithName("pv-1").WithAnnotations("a", "b").WithSpec("storageClassName", "someOtherField").Unstructured,
 		},
 		{
 			name:    "restore.spec.restorePVs=false, return early",
 			obj:     NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
-			restore: velerotest.NewDefaultTestRestore().WithRestorePVs(false).Restore,
-			backup:  velerotest.NewTestBackup().WithName("backup1").WithPhase(api.BackupPhaseInProgress).Backup,
+			restore: builder.ForRestore(api.DefaultNamespace, "").RestorePVs(false).Result(),
+			backup:  defaultBackup().Phase(api.BackupPhaseInProgress).Result(),
 			volumeSnapshots: []*volume.Snapshot{
 				newSnapshot("pv-1", "loc-1", "gp", "az-1", "snap-1", 1000),
 			},
 			locations: []*api.VolumeSnapshotLocation{
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-1").VolumeSnapshotLocation,
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-1").Result(),
 			},
 			expectedErr: false,
 			expectedRes: NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
@@ -95,11 +100,11 @@ func TestExecutePVAction_NoSnapshotRestores(t *testing.T) {
 		{
 			name:    "volumeSnapshots is empty: return early",
 			obj:     NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
-			restore: velerotest.NewDefaultTestRestore().WithRestorePVs(true).Restore,
-			backup:  velerotest.NewTestBackup().WithName("backup-1").Backup,
+			restore: builder.ForRestore(api.DefaultNamespace, "").RestorePVs(true).Result(),
+			backup:  defaultBackup().Result(),
 			locations: []*api.VolumeSnapshotLocation{
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-1").VolumeSnapshotLocation,
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-2").VolumeSnapshotLocation,
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-1").Result(),
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-2").Result(),
 			},
 			volumeSnapshots: []*volume.Snapshot{},
 			expectedRes:     NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
@@ -107,11 +112,11 @@ func TestExecutePVAction_NoSnapshotRestores(t *testing.T) {
 		{
 			name:    "volumeSnapshots doesn't have a snapshot for PV: return early",
 			obj:     NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
-			restore: velerotest.NewDefaultTestRestore().WithRestorePVs(true).Restore,
-			backup:  velerotest.NewTestBackup().WithName("backup-1").Backup,
+			restore: builder.ForRestore(api.DefaultNamespace, "").RestorePVs(true).Result(),
+			backup:  defaultBackup().Result(),
 			locations: []*api.VolumeSnapshotLocation{
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-1").VolumeSnapshotLocation,
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-2").VolumeSnapshotLocation,
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-1").Result(),
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-2").Result(),
 			},
 			volumeSnapshots: []*volume.Snapshot{
 				newSnapshot("non-matching-pv-1", "loc-1", "type-1", "az-1", "snap-1", 1),
@@ -173,11 +178,11 @@ func TestExecutePVAction_SnapshotRestores(t *testing.T) {
 		{
 			name:    "backup with a matching volume.Snapshot for PV executes restore",
 			obj:     NewTestUnstructured().WithName("pv-1").WithSpec().Unstructured,
-			restore: velerotest.NewDefaultTestRestore().WithRestorePVs(true).Restore,
-			backup:  velerotest.NewTestBackup().WithName("backup-1").Backup,
+			restore: builder.ForRestore(api.DefaultNamespace, "").RestorePVs(true).Result(),
+			backup:  defaultBackup().Result(),
 			locations: []*api.VolumeSnapshotLocation{
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-1").WithProvider("provider-1").VolumeSnapshotLocation,
-				velerotest.NewTestVolumeSnapshotLocation().WithName("loc-2").WithProvider("provider-2").VolumeSnapshotLocation,
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-1").Provider("provider-1").Result(),
+				builder.ForVolumeSnapshotLocation(api.DefaultNamespace, "loc-2").Provider("provider-2").Result(),
 			},
 			volumeSnapshots: []*volume.Snapshot{
 				newSnapshot("pv-1", "loc-1", "type-1", "az-1", "snap-1", 1),
@@ -253,4 +258,95 @@ func newSnapshot(pvName, location, volumeType, volumeAZ, snapshotID string, volu
 func int64Ptr(val int) *int64 {
 	r := int64(val)
 	return &r
+}
+
+type testUnstructured struct {
+	*unstructured.Unstructured
+}
+
+func NewTestUnstructured() *testUnstructured {
+	obj := &testUnstructured{
+		Unstructured: &unstructured.Unstructured{
+			Object: make(map[string]interface{}),
+		},
+	}
+
+	return obj
+}
+
+func (obj *testUnstructured) WithMetadata(fields ...string) *testUnstructured {
+	return obj.withMap("metadata", fields...)
+}
+
+func (obj *testUnstructured) WithSpec(fields ...string) *testUnstructured {
+	if _, found := obj.Object["spec"]; found {
+		panic("spec already set - you probably didn't mean to do this twice!")
+	}
+	return obj.withMap("spec", fields...)
+}
+
+func (obj *testUnstructured) WithStatus(fields ...string) *testUnstructured {
+	return obj.withMap("status", fields...)
+}
+
+func (obj *testUnstructured) WithMetadataField(field string, value interface{}) *testUnstructured {
+	return obj.withMapEntry("metadata", field, value)
+}
+
+func (obj *testUnstructured) WithSpecField(field string, value interface{}) *testUnstructured {
+	return obj.withMapEntry("spec", field, value)
+}
+
+func (obj *testUnstructured) WithStatusField(field string, value interface{}) *testUnstructured {
+	return obj.withMapEntry("status", field, value)
+}
+
+func (obj *testUnstructured) WithAnnotations(fields ...string) *testUnstructured {
+	vals := map[string]string{}
+	for _, field := range fields {
+		vals[field] = "foo"
+	}
+
+	return obj.WithAnnotationValues(vals)
+}
+
+func (obj *testUnstructured) WithAnnotationValues(fieldVals map[string]string) *testUnstructured {
+	annotations := make(map[string]interface{})
+	for field, val := range fieldVals {
+		annotations[field] = val
+	}
+
+	obj = obj.WithMetadataField("annotations", annotations)
+
+	return obj
+}
+
+func (obj *testUnstructured) WithName(name string) *testUnstructured {
+	return obj.WithMetadataField("name", name)
+}
+
+func (obj *testUnstructured) withMap(name string, fields ...string) *testUnstructured {
+	m := make(map[string]interface{})
+	obj.Object[name] = m
+
+	for _, field := range fields {
+		m[field] = "foo"
+	}
+
+	return obj
+}
+
+func (obj *testUnstructured) withMapEntry(mapName, field string, value interface{}) *testUnstructured {
+	var m map[string]interface{}
+
+	if res, ok := obj.Unstructured.Object[mapName]; !ok {
+		m = make(map[string]interface{})
+		obj.Unstructured.Object[mapName] = m
+	} else {
+		m = res.(map[string]interface{})
+	}
+
+	m[field] = value
+
+	return obj
 }

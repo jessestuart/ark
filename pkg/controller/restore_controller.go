@@ -43,6 +43,7 @@ import (
 	"github.com/heptio/velero/pkg/metrics"
 	"github.com/heptio/velero/pkg/persistence"
 	"github.com/heptio/velero/pkg/plugin/clientmgmt"
+	"github.com/heptio/velero/pkg/restic"
 	pkgrestore "github.com/heptio/velero/pkg/restore"
 	"github.com/heptio/velero/pkg/util/collections"
 	kubeutil "github.com/heptio/velero/pkg/util/kube"
@@ -75,7 +76,7 @@ type restoreController struct {
 
 	namespace              string
 	restoreClient          velerov1client.RestoresGetter
-	backupClient           velerov1client.BackupsGetter
+	podVolumeBackupClient  velerov1client.PodVolumeBackupsGetter
 	restorer               pkgrestore.Restorer
 	backupLister           listers.BackupLister
 	restoreLister          listers.RestoreLister
@@ -84,6 +85,7 @@ type restoreController struct {
 	restoreLogLevel        logrus.Level
 	defaultBackupLocation  string
 	metrics                *metrics.ServerMetrics
+	logFormat              logging.Format
 
 	newPluginManager func(logger logrus.FieldLogger) clientmgmt.Manager
 	newBackupStore   func(*api.BackupStorageLocation, persistence.ObjectStoreGetter, logrus.FieldLogger) (persistence.BackupStore, error)
@@ -93,7 +95,7 @@ func NewRestoreController(
 	namespace string,
 	restoreInformer informers.RestoreInformer,
 	restoreClient velerov1client.RestoresGetter,
-	backupClient velerov1client.BackupsGetter,
+	podVolumeBackupClient velerov1client.PodVolumeBackupsGetter,
 	restorer pkgrestore.Restorer,
 	backupInformer informers.BackupInformer,
 	backupLocationInformer informers.BackupStorageLocationInformer,
@@ -103,12 +105,13 @@ func NewRestoreController(
 	newPluginManager func(logrus.FieldLogger) clientmgmt.Manager,
 	defaultBackupLocation string,
 	metrics *metrics.ServerMetrics,
+	logFormat logging.Format,
 ) Interface {
 	c := &restoreController{
 		genericController:      newGenericController("restore", logger),
 		namespace:              namespace,
 		restoreClient:          restoreClient,
-		backupClient:           backupClient,
+		podVolumeBackupClient:  podVolumeBackupClient,
 		restorer:               restorer,
 		backupLister:           backupInformer.Lister(),
 		restoreLister:          restoreInformer.Lister(),
@@ -117,6 +120,7 @@ func NewRestoreController(
 		restoreLogLevel:        restoreLogLevel,
 		defaultBackupLocation:  defaultBackupLocation,
 		metrics:                metrics,
+		logFormat:              logFormat,
 
 		// use variables to refer to these functions so they can be
 		// replaced with fakes for testing.
@@ -412,7 +416,7 @@ func (c *restoreController) fetchBackupInfo(backupName string, pluginManager cli
 func (c *restoreController) runValidatedRestore(restore *api.Restore, info backupInfo) error {
 	// instantiate the per-restore logger that will output both to a temp file
 	// (for upload to object storage) and to stdout.
-	restoreLog, err := newRestoreLogger(restore, c.logger, c.restoreLogLevel)
+	restoreLog, err := newRestoreLogger(restore, c.logger, c.restoreLogLevel, c.logFormat)
 	if err != nil {
 		return err
 	}
@@ -432,13 +436,32 @@ func (c *restoreController) runValidatedRestore(restore *api.Restore, info backu
 	}
 	defer closeAndRemoveFile(backupFile, c.logger)
 
+	opts := restic.NewPodVolumeBackupListOptions(restore.Spec.BackupName)
+	podVolumeBackupList, err := c.podVolumeBackupClient.PodVolumeBackups(c.namespace).List(opts)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
 	volumeSnapshots, err := info.backupStore.GetBackupVolumeSnapshots(restore.Spec.BackupName)
 	if err != nil {
 		return errors.Wrap(err, "error fetching volume snapshots metadata")
 	}
 
 	restoreLog.Info("starting restore")
-	restoreWarnings, restoreErrors := c.restorer.Restore(restoreLog, restore, info.backup, volumeSnapshots, backupFile, actions, c.snapshotLocationLister, pluginManager)
+
+	var podVolumeBackups []*velerov1api.PodVolumeBackup
+	for i := range podVolumeBackupList.Items {
+		podVolumeBackups = append(podVolumeBackups, &podVolumeBackupList.Items[i])
+	}
+	restoreReq := pkgrestore.Request{
+		Log:              restoreLog,
+		Restore:          restore,
+		Backup:           info.backup,
+		PodVolumeBackups: podVolumeBackups,
+		VolumeSnapshots:  volumeSnapshots,
+		BackupReader:     backupFile,
+	}
+	restoreWarnings, restoreErrors := c.restorer.Restore(restoreReq, actions, c.snapshotLocationLister, pluginManager)
 	restoreLog.Info("restore completed")
 
 	if logReader, err := restoreLog.done(c.logger); err != nil {
@@ -555,14 +578,14 @@ type restoreLogger struct {
 	w    *gzip.Writer
 }
 
-func newRestoreLogger(restore *api.Restore, baseLogger logrus.FieldLogger, logLevel logrus.Level) (*restoreLogger, error) {
+func newRestoreLogger(restore *api.Restore, baseLogger logrus.FieldLogger, logLevel logrus.Level, logFormat logging.Format) (*restoreLogger, error) {
 	file, err := ioutil.TempFile("", "")
 	if err != nil {
 		return nil, errors.Wrap(err, "error creating temp file")
 	}
 	w := gzip.NewWriter(file)
 
-	logger := logging.DefaultLogger(logLevel)
+	logger := logging.DefaultLogger(logLevel, logFormat)
 	logger.Out = io.MultiWriter(os.Stdout, w)
 
 	return &restoreLogger{

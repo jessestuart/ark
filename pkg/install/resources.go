@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/heptio/velero/pkg/apis/velero/v1"
+	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/buildinfo"
 )
 
@@ -37,7 +37,17 @@ func imageVersion() string {
 }
 
 // DefaultImage is the default image to use for the Velero deployment and restic daemonset containers.
-var DefaultImage = "gcr.io/heptio-images/velero:" + imageVersion()
+var (
+	DefaultImage               = "gcr.io/heptio-images/velero:" + imageVersion()
+	DefaultVeleroPodCPURequest = "500m"
+	DefaultVeleroPodMemRequest = "128Mi"
+	DefaultVeleroPodCPULimit   = "1000m"
+	DefaultVeleroPodMemLimit   = "256Mi"
+	DefaultResticPodCPURequest = "0"
+	DefaultResticPodMemRequest = "0"
+	DefaultResticPodCPULimit   = "0"
+	DefaultResticPodMemLimit   = "0"
+)
 
 func labels() map[string]string {
 	return map[string]string{
@@ -45,12 +55,20 @@ func labels() map[string]string {
 	}
 }
 
-func podAnnotations() map[string]string {
-	return map[string]string{
+func podAnnotations(userAnnotations map[string]string) map[string]string {
+	// Use the default annotations as a starting point
+	base := map[string]string{
 		"prometheus.io/scrape": "true",
 		"prometheus.io/port":   "8085",
 		"prometheus.io/path":   "/metrics",
 	}
+
+	// Merge base annotations with user annotations to enforce CLI precedence
+	for k, v := range userAnnotations {
+		base[k] = v
+	}
+
+	return base
 }
 
 func containerPorts() []corev1.ContainerPort {
@@ -180,6 +198,9 @@ type VeleroOptions struct {
 	ProviderName       string
 	Bucket             string
 	Prefix             string
+	PodAnnotations     map[string]string
+	VeleroPodResources corev1.ResourceRequirements
+	ResticPodResources corev1.ResourceRequirements
 	SecretData         []byte
 	RestoreOnly        bool
 	UseRestic          bool
@@ -208,8 +229,10 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 	sa := ServiceAccount(o.Namespace)
 	appendUnstructured(resources, sa)
 
-	sec := Secret(o.Namespace, o.SecretData)
-	appendUnstructured(resources, sec)
+	if o.SecretData != nil {
+		sec := Secret(o.Namespace, o.SecretData)
+		appendUnstructured(resources, sec)
+	}
 
 	bsl := BackupStorageLocation(o.Namespace, o.ProviderName, o.Bucket, o.Prefix, o.BSLConfig)
 	appendUnstructured(resources, bsl)
@@ -220,12 +243,19 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 		appendUnstructured(resources, vsl)
 	}
 
+	secretPresent := o.SecretData != nil
+
 	deploy := Deployment(o.Namespace,
+		WithAnnotations(o.PodAnnotations),
 		WithImage(o.Image),
+		WithResources(o.VeleroPodResources),
+		WithSecret(secretPresent),
 	)
 	if o.RestoreOnly {
 		deploy = Deployment(o.Namespace,
+			WithAnnotations(o.PodAnnotations),
 			WithImage(o.Image),
+			WithSecret(secretPresent),
 			WithRestoreOnly(),
 		)
 	}
@@ -233,7 +263,11 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 
 	if o.UseRestic {
 		ds := DaemonSet(o.Namespace,
+
+			WithAnnotations(o.PodAnnotations),
 			WithImage(o.Image),
+			WithResources(o.ResticPodResources),
+			WithSecret(secretPresent),
 		)
 		appendUnstructured(resources, ds)
 	}

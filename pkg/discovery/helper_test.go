@@ -25,8 +25,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	velerotest "github.com/heptio/velero/pkg/test"
 	"github.com/heptio/velero/pkg/util/logging"
-	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
 func TestSortResources(t *testing.T) {
@@ -180,10 +180,12 @@ func TestRefreshServerPreferredResources(t *testing.T) {
 		},
 	}
 
+	formatFlag := logging.FormatText
+
 	for _, test := range tests {
 		fakeServer := velerotest.NewFakeServerResourcesInterface(test.resourceList, test.failedGroups, test.returnError)
 		t.Run(test.name, func(t *testing.T) {
-			resources, err := refreshServerPreferredResources(fakeServer, logging.DefaultLogger(logrus.DebugLevel))
+			resources, err := refreshServerPreferredResources(fakeServer, logging.DefaultLogger(logrus.DebugLevel, formatFlag))
 			if test.returnError != nil {
 				assert.NotNil(t, err)
 			} else {

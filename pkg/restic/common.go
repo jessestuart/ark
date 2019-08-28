@@ -35,30 +35,35 @@ import (
 )
 
 const (
-	DaemonSet                   = "restic"
-	InitContainer               = "restic-wait"
+	// DaemonSet is the name of the Velero restic daemonset.
+	DaemonSet = "restic"
+
+	// InitContainer is the name of the init container added
+	// to workload pods to help with restores.
+	InitContainer = "restic-wait"
+
+	// DefaultMaintenanceFrequency is the default time interval
+	// at which restic check & prune are run.
 	DefaultMaintenanceFrequency = 24 * time.Hour
 
-	podAnnotationPrefix       = "snapshot.velero.io/"
+	// PVCNameAnnotation is the key for the annotation added to
+	// pod volume backups when they're for a PVC.
+	PVCNameAnnotation = "velero.io/pvc-name"
+
+	// Deprecated.
+	//
+	// TODO(2.0): remove
+	podAnnotationPrefix = "snapshot.velero.io/"
+
 	volumesToBackupAnnotation = "backup.velero.io/backup-volumes"
 )
 
-// PodHasSnapshotAnnotation returns true if the object has an annotation
-// indicating that there is a restic snapshot for a volume in this pod,
-// or false otherwise.
-func PodHasSnapshotAnnotation(obj metav1.Object) bool {
-	for key := range obj.GetAnnotations() {
-		if strings.HasPrefix(key, podAnnotationPrefix) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// GetPodSnapshotAnnotations returns a map, of volume name -> snapshot id,
+// getPodSnapshotAnnotations returns a map, of volume name -> snapshot id,
 // of all restic snapshots for this pod.
-func GetPodSnapshotAnnotations(obj metav1.Object) map[string]string {
+// TODO(2.0) to remove
+// Deprecated: we will stop using pod annotations to record restic snapshot IDs after they're taken,
+// therefore we won't need to check if these annotations exist.
+func getPodSnapshotAnnotations(obj metav1.Object) map[string]string {
 	var res map[string]string
 
 	insertSafe := func(k, v string) {
@@ -77,18 +82,22 @@ func GetPodSnapshotAnnotations(obj metav1.Object) map[string]string {
 	return res
 }
 
-// SetPodSnapshotAnnotation adds an annotation to a pod to indicate that
-// the specified volume has a restic snapshot with the provided id.
-func SetPodSnapshotAnnotation(obj metav1.Object, volumeName, snapshotID string) {
-	annotations := obj.GetAnnotations()
+// GetVolumeBackupsForPod returns a map, of volume name -> snapshot id,
+// of the PodVolumeBackups that exist for the provided pod.
+func GetVolumeBackupsForPod(podVolumeBackups []*velerov1api.PodVolumeBackup, pod metav1.Object) map[string]string {
+	volumes := make(map[string]string)
 
-	if annotations == nil {
-		annotations = make(map[string]string)
+	for _, pvb := range podVolumeBackups {
+		if pod.GetName() == pvb.Spec.Pod.Name {
+			volumes[pvb.Spec.Volume] = pvb.Status.SnapshotID
+		}
 	}
 
-	annotations[podAnnotationPrefix+volumeName] = snapshotID
+	if len(volumes) > 0 {
+		return volumes
+	}
 
-	obj.SetAnnotations(annotations)
+	return getPodSnapshotAnnotations(pod)
 }
 
 // GetVolumesToBackup returns a list of volume names to backup for

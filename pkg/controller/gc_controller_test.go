@@ -33,10 +33,11 @@ import (
 	core "k8s.io/client-go/testing"
 
 	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/builder"
 	"github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
+	velerotest "github.com/heptio/velero/pkg/test"
 	"github.com/heptio/velero/pkg/util/kube"
-	velerotest "github.com/heptio/velero/pkg/util/test"
 )
 
 func TestGCControllerEnqueueAllBackups(t *testing.T) {
@@ -66,7 +67,7 @@ func TestGCControllerEnqueueAllBackups(t *testing.T) {
 	var expected []string
 
 	for i := 0; i < 3; i++ {
-		backup := velerotest.NewTestBackup().WithName(fmt.Sprintf("backup-%d", i)).Backup
+		backup := builder.ForBackup(api.DefaultNamespace, fmt.Sprintf("backup-%d", i)).Result()
 		sharedInformers.Velero().V1().Backups().Informer().GetStore().Add(backup)
 		expected = append(expected, kube.NamespaceAndName(backup))
 	}
@@ -97,7 +98,7 @@ Loop:
 }
 
 func TestGCControllerHasUpdateFunc(t *testing.T) {
-	backup := velerotest.NewTestBackup().WithName("backup").Backup
+	backup := defaultBackup().Result()
 	expected := kube.NamespaceAndName(backup)
 
 	client := fake.NewSimpleClientset(backup)
@@ -151,7 +152,7 @@ func TestGCControllerHasUpdateFunc(t *testing.T) {
 
 func TestGCControllerProcessQueueItem(t *testing.T) {
 	fakeClock := clock.NewFakeClock(time.Now())
-	defaultBackupLocation := velerotest.NewTestBackupStorageLocation().WithName("default").BackupStorageLocation
+	defaultBackupLocation := builder.ForBackupStorageLocation("velero", "default").Result()
 
 	tests := []struct {
 		name                           string
@@ -166,52 +167,32 @@ func TestGCControllerProcessQueueItem(t *testing.T) {
 			name: "can't find backup - no error",
 		},
 		{
-			name: "unexpired backup is not deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(1 * time.Minute)).
-				WithStorageLocation("default").
-				Backup,
+			name:           "unexpired backup is not deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(time.Minute)).StorageLocation("default").Result(),
 			backupLocation: defaultBackupLocation,
 			expectDeletion: false,
 		},
 		{
-			name: "expired backup in read-only storage location is not deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Minute)).
-				WithStorageLocation("read-only").
-				Backup,
-			backupLocation: velerotest.NewTestBackupStorageLocation().WithName("read-only").WithAccessMode(api.BackupStorageLocationAccessModeReadOnly).BackupStorageLocation,
+			name:           "expired backup in read-only storage location is not deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(-time.Minute)).StorageLocation("read-only").Result(),
+			backupLocation: builder.ForBackupStorageLocation("velero", "read-only").AccessMode(api.BackupStorageLocationAccessModeReadOnly).Result(),
 			expectDeletion: false,
 		},
 		{
-			name: "expired backup in read-write storage location is deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Minute)).
-				WithStorageLocation("read-write").
-				Backup,
-			backupLocation: velerotest.NewTestBackupStorageLocation().WithName("read-write").WithAccessMode(api.BackupStorageLocationAccessModeReadWrite).BackupStorageLocation,
+			name:           "expired backup in read-write storage location is deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(-time.Minute)).StorageLocation("read-write").Result(),
+			backupLocation: builder.ForBackupStorageLocation("velero", "read-write").AccessMode(api.BackupStorageLocationAccessModeReadWrite).Result(),
 			expectDeletion: true,
 		},
 		{
-			name: "expired backup with no pending deletion requests is deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Second)).
-				WithStorageLocation("default").
-				Backup,
+			name:           "expired backup with no pending deletion requests is deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(-time.Second)).StorageLocation("default").Result(),
 			backupLocation: defaultBackupLocation,
 			expectDeletion: true,
 		},
 		{
-			name: "expired backup with a pending deletion request is not deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Second)).
-				WithStorageLocation("default").
-				Backup,
+			name:           "expired backup with a pending deletion request is not deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(-time.Second)).StorageLocation("default").Result(),
 			backupLocation: defaultBackupLocation,
 			deleteBackupRequests: []*api.DeleteBackupRequest{
 				{
@@ -231,12 +212,8 @@ func TestGCControllerProcessQueueItem(t *testing.T) {
 			expectDeletion: false,
 		},
 		{
-			name: "expired backup with only processed deletion requests is deleted",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Second)).
-				WithStorageLocation("default").
-				Backup,
+			name:           "expired backup with only processed deletion requests is deleted",
+			backup:         defaultBackup().Expiration(fakeClock.Now().Add(-time.Second)).StorageLocation("default").Result(),
 			backupLocation: defaultBackupLocation,
 			deleteBackupRequests: []*api.DeleteBackupRequest{
 				{
@@ -256,12 +233,8 @@ func TestGCControllerProcessQueueItem(t *testing.T) {
 			expectDeletion: true,
 		},
 		{
-			name: "create DeleteBackupRequest error returns an error",
-			backup: velerotest.NewTestBackup().
-				WithName("backup-1").
-				WithExpiration(fakeClock.Now().Add(-1 * time.Second)).
-				WithStorageLocation("default").
-				Backup,
+			name:                           "create DeleteBackupRequest error returns an error",
+			backup:                         defaultBackup().Expiration(fakeClock.Now().Add(-time.Second)).StorageLocation("default").Result(),
 			backupLocation:                 defaultBackupLocation,
 			expectDeletion:                 true,
 			createDeleteBackupRequestError: true,

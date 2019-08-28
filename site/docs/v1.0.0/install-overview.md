@@ -6,12 +6,6 @@ You can run Velero in any namespace, which requires additional customization. Se
 
 You can also use Velero's integration with restic, which requires additional setup. See [restic instructions][20].
 
-## Customize configuration
-
-Whether you run Velero on a cloud provider or on-premises, if you have more than one volume snapshot location for a given volume provider, you can specify its default location for backups by setting a server flag in your Velero deployment YAML.
-
-For details, see the documentation topics for individual cloud providers.
-
 ## Cloud provider
 
 The Velero client includes an `install` command to specify the settings for each supported cloud provider. You can install Velero for the included cloud providers using the following command:
@@ -54,6 +48,12 @@ the supported options. For example, if you use [Portworx][102] for persistent st
 of your Velero backups. If there is no native snapshot plugin available for your storage platform, you can use Velero's [restic integration][20], which provides a
 platform-agnostic backup solution for volume data.
 
+## Customize configuration
+
+Whether you run Velero on a cloud provider or on-premises, if you have more than one volume snapshot location for a given volume provider, you can specify its default location for backups by setting a server flag in your Velero deployment YAML.
+
+For details, see the documentation topics for individual cloud providers.
+
 ## Removing Velero
 
 If you would like to completely uninstall Velero from your cluster, the following commands will remove all resources created by `velero install`:
@@ -62,6 +62,18 @@ If you would like to completely uninstall Velero from your cluster, the followin
 kubectl delete namespace/velero clusterrolebinding/velero
 kubectl delete crds -l component=velero
 ```
+
+## Installing with the Helm chart
+
+When installing using the Helm chart, the provider's credential information will need to be appended into your values.
+
+The easiest way to do this is with the `--set-file` argument, available in Helm 2.10 and higher.
+
+```bash
+helm install --set-file credentials.secretContents.cloud=./credentials-velero stable/velero
+```
+
+See your cloud provider's documentation for the contents and creation of the `credentials-velero` file.
 
 ## Examples
 

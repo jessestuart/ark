@@ -26,14 +26,14 @@ import (
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"k8s.io/client-go/dynamic"
 
-	api "github.com/heptio/velero/pkg/apis/velero/v1"
+	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/cmd"
 	"github.com/heptio/velero/pkg/cmd/util/flag"
 	"github.com/heptio/velero/pkg/cmd/util/output"
 	"github.com/heptio/velero/pkg/install"
+	kubeutil "github.com/heptio/velero/pkg/util/kube"
 )
 
 // InstallOptions collects all the options for installing Velero into a Kubernetes cluster.
@@ -43,8 +43,18 @@ type InstallOptions struct {
 	BucketName           string
 	Prefix               string
 	ProviderName         string
+	PodAnnotations       flag.Map
+	VeleroPodCPURequest  string
+	VeleroPodMemRequest  string
+	VeleroPodCPULimit    string
+	VeleroPodMemLimit    string
+	ResticPodCPURequest  string
+	ResticPodMemRequest  string
+	ResticPodCPULimit    string
+	ResticPodMemLimit    string
 	RestoreOnly          bool
 	SecretFile           string
+	NoSecret             bool
 	DryRun               bool
 	BackupStorageConfig  flag.Map
 	VolumeSnapshotConfig flag.Map
@@ -57,10 +67,19 @@ type InstallOptions struct {
 func (o *InstallOptions) BindFlags(flags *pflag.FlagSet) {
 	flags.StringVar(&o.ProviderName, "provider", o.ProviderName, "provider name for backup and volume storage")
 	flags.StringVar(&o.BucketName, "bucket", o.BucketName, "name of the object storage bucket where backups should be stored")
-	flags.StringVar(&o.SecretFile, "secret-file", o.SecretFile, "file containing credentials for backup and volume provider")
+	flags.StringVar(&o.SecretFile, "secret-file", o.SecretFile, "file containing credentials for backup and volume provider. If not specified, --no-secret must be used for confirmation. Optional.")
+	flags.BoolVar(&o.NoSecret, "no-secret", o.NoSecret, "flag indicating if a secret should be created. Must be used as confirmation if --secret-file is not provided. Optional.")
 	flags.StringVar(&o.Image, "image", o.Image, "image to use for the Velero and restic server pods. Optional.")
 	flags.StringVar(&o.Prefix, "prefix", o.Prefix, "prefix under which all Velero data should be stored within the bucket. Optional.")
-	flags.StringVar(&o.Namespace, "namespace", o.Namespace, "namespace to install Velero and associated data into. Optional.")
+	flags.Var(&o.PodAnnotations, "pod-annotations", "annotations to add to the Velero and restic pods. Optional. Format is key1=value1,key2=value2")
+	flags.StringVar(&o.VeleroPodCPURequest, "velero-pod-cpu-request", o.VeleroPodCPURequest, `CPU request for Velero pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.VeleroPodMemRequest, "velero-pod-mem-request", o.VeleroPodMemRequest, `memory request for Velero pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.VeleroPodCPULimit, "velero-pod-cpu-limit", o.VeleroPodCPULimit, `CPU limit for Velero pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.VeleroPodMemLimit, "velero-pod-mem-limit", o.VeleroPodMemLimit, `memory limit for Velero pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.ResticPodCPURequest, "restic-pod-cpu-request", o.ResticPodCPURequest, `CPU request for restic pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.ResticPodMemRequest, "restic-pod-mem-request", o.ResticPodMemRequest, `memory request for restic pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.ResticPodCPULimit, "restic-pod-cpu-limit", o.ResticPodCPULimit, `CPU limit for restic pod. A value of "0" is treated as unbounded. Optional.`)
+	flags.StringVar(&o.ResticPodMemLimit, "restic-pod-mem-limit", o.ResticPodMemLimit, `memory limit for restic pod. A value of "0" is treated as unbounded. Optional.`)
 	flags.Var(&o.BackupStorageConfig, "backup-location-config", "configuration to use for the backup storage location. Format is key1=value1,key2=value2")
 	flags.Var(&o.VolumeSnapshotConfig, "snapshot-location-config", "configuration to use for the volume snapshot location. Format is key1=value1,key2=value2")
 	flags.BoolVar(&o.UseVolumeSnapshots, "use-volume-snapshots", o.UseVolumeSnapshots, "whether or not to create snapshot location automatically. Set to false if you do not plan to create volume snapshots via a storage provider.")
@@ -70,13 +89,22 @@ func (o *InstallOptions) BindFlags(flags *pflag.FlagSet) {
 	flags.BoolVar(&o.Wait, "wait", o.Wait, "wait for Velero deployment to be ready. Optional.")
 }
 
-// NewInstallOptions instantiates a new, default InstallOptions stuct.
+// NewInstallOptions instantiates a new, default InstallOptions struct.
 func NewInstallOptions() *InstallOptions {
 	return &InstallOptions{
-		Namespace:            api.DefaultNamespace,
+		Namespace:            velerov1api.DefaultNamespace,
 		Image:                install.DefaultImage,
 		BackupStorageConfig:  flag.NewMap(),
 		VolumeSnapshotConfig: flag.NewMap(),
+		PodAnnotations:       flag.NewMap(),
+		VeleroPodCPURequest:  install.DefaultVeleroPodCPURequest,
+		VeleroPodMemRequest:  install.DefaultVeleroPodMemRequest,
+		VeleroPodCPULimit:    install.DefaultVeleroPodCPULimit,
+		VeleroPodMemLimit:    install.DefaultVeleroPodMemLimit,
+		ResticPodCPURequest:  install.DefaultResticPodCPURequest,
+		ResticPodMemRequest:  install.DefaultResticPodMemRequest,
+		ResticPodCPULimit:    install.DefaultResticPodCPULimit,
+		ResticPodMemLimit:    install.DefaultResticPodMemLimit,
 		// Default to creating a VSL unless we're told otherwise
 		UseVolumeSnapshots: true,
 	}
@@ -84,20 +112,35 @@ func NewInstallOptions() *InstallOptions {
 
 // AsVeleroOptions translates the values provided at the command line into values used to instantiate Kubernetes resources
 func (o *InstallOptions) AsVeleroOptions() (*install.VeleroOptions, error) {
-	realPath, err := filepath.Abs(o.SecretFile)
+	var secretData []byte
+	if o.SecretFile != "" && !o.NoSecret {
+		realPath, err := filepath.Abs(o.SecretFile)
+		if err != nil {
+			return nil, err
+		}
+		secretData, err = ioutil.ReadFile(realPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+	veleroPodResources, err := kubeutil.ParseResourceRequirements(o.VeleroPodCPURequest, o.VeleroPodMemRequest, o.VeleroPodCPULimit, o.VeleroPodMemLimit)
 	if err != nil {
 		return nil, err
 	}
-	secretData, err := ioutil.ReadFile(realPath)
+	resticPodResources, err := kubeutil.ParseResourceRequirements(o.ResticPodCPURequest, o.ResticPodMemRequest, o.ResticPodCPULimit, o.ResticPodMemLimit)
 	if err != nil {
 		return nil, err
 	}
+
 	return &install.VeleroOptions{
 		Namespace:          o.Namespace,
 		Image:              o.Image,
 		ProviderName:       o.ProviderName,
 		Bucket:             o.BucketName,
 		Prefix:             o.Prefix,
+		PodAnnotations:     o.PodAnnotations.Data(),
+		VeleroPodResources: veleroPodResources,
+		ResticPodResources: resticPodResources,
 		SecretData:         secretData,
 		RestoreOnly:        o.RestoreOnly,
 		UseRestic:          o.UseRestic,
@@ -124,7 +167,9 @@ Velero Deployment and associated Restic DaemonSet.
 
 The provided secret data will be created in a Secret named 'cloud-credentials'.
 
-All namespaced resources will be placed in the 'velero' namespace.
+All namespaced resources will be placed in the 'velero' namespace by default. 
+
+The '--namespace' flag can be used to specify a different namespace to install into.
 
 Use '--wait' to wait for the Velero Deployment to be ready before proceeding.
 
@@ -139,11 +184,17 @@ This is useful as a starting point for more customized installations.
 
 	# velero install --bucket gcp-backups --provider gcp --secret-file ./gcp-creds.json --wait
 
+	# velero install --bucket backups --provider aws --backup-location-config region=us-west-2 --snapshot-location-config region=us-west-2 --no-secret --pod-annotations iam.amazonaws.com/role=arn:aws:iam::<AWS_ACCOUNT_ID>:role/<VELERO_ROLE_NAME>
+
+	# velero install --bucket gcp-backups --provider gcp --secret-file ./gcp-creds.json --velero-pod-cpu-request=1000m --velero-pod-cpu-limit=5000m --velero-pod-mem-request=512Mi --velero-pod-mem-limit=1024Mi
+
+	# velero install --bucket gcp-backups --provider gcp --secret-file ./gcp-creds.json --restic-pod-cpu-request=1000m --restic-pod-cpu-limit=5000m --restic-pod-mem-request=512Mi --restic-pod-mem-limit=1024Mi
+
 		`,
 		Run: func(c *cobra.Command, args []string) {
 			cmd.CheckError(o.Validate(c, args, f))
 			cmd.CheckError(o.Complete(args, f))
-			cmd.CheckError(o.Run(c))
+			cmd.CheckError(o.Run(c, f))
 		},
 	}
 
@@ -155,7 +206,7 @@ This is useful as a starting point for more customized installations.
 }
 
 // Run executes a command in the context of the provided arguments.
-func (o *InstallOptions) Run(c *cobra.Command) error {
+func (o *InstallOptions) Run(c *cobra.Command, f client.Factory) error {
 	vo, err := o.AsVeleroOptions()
 	if err != nil {
 		return err
@@ -173,12 +224,7 @@ func (o *InstallOptions) Run(c *cobra.Command) error {
 	if o.DryRun {
 		return nil
 	}
-
-	clientConfig, err := client.Config("", "", fmt.Sprintf("%s-%s", c.Parent().Name(), c.Name()))
-	if err != nil {
-		return err
-	}
-	dynamicClient, err := dynamic.NewForConfig(clientConfig)
+	dynamicClient, err := f.DynamicClient()
 	if err != nil {
 		return err
 	}
@@ -197,12 +243,16 @@ func (o *InstallOptions) Run(c *cobra.Command) error {
 			return errors.Wrap(err, errorMsg)
 		}
 	}
+	if o.SecretFile == "" {
+		fmt.Printf("\nNo secret file was specified, no Secret created.\n\n")
+	}
 	fmt.Printf("Velero is installed! ⛵ Use 'kubectl logs deployment/velero -n %s' to view the status.\n", o.Namespace)
 	return nil
 }
 
 //Complete completes options for a command.
 func (o *InstallOptions) Complete(args []string, f client.Factory) error {
+	o.Namespace = f.Namespace()
 	return nil
 }
 
@@ -227,8 +277,11 @@ func (o *InstallOptions) Validate(c *cobra.Command, args []string, f client.Fact
 		return errors.New("--provider is required")
 	}
 
-	if o.SecretFile == "" {
-		return errors.New("--secret-file is required")
+	switch {
+	case o.SecretFile == "" && !o.NoSecret:
+		return errors.New("One of --secret-file or --no-secret is required")
+	case o.SecretFile != "" && o.NoSecret:
+		return errors.New("Cannot use both --secret-file and --no-secret")
 	}
 
 	return nil

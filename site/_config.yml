@@ -2,9 +2,12 @@
 title: Velero
 email:
 author: Velero Authors
-description:
-url:
+description: Backup and migrate Kubernetes resources and persistent volumes
+url: velero.io
 logo: Velero.svg
+twitter:
+  username: projectvelero
+  card: summary
 vm_logo: vm-logo.png
 gh_repo: https://github.com/heptio/velero
 markdown: redcarpet
@@ -14,7 +17,7 @@ footer:
   title: Getting Started
   content: To help you get started, see the documentation.
   cta_title: ''
-  cta_url: /docs/master
+  cta_url: /docs
   cta_text: Documentation
   vm-link: http://vmware.github.io/
 
@@ -31,6 +34,9 @@ footer_social_links:
   RSS:
     fa_icon: fa fa-rss
     url: feed.xml
+  GitHub:
+    fa_icon: fab fa-github
+    url: https://github.com/heptio/velero
 
 defaults:
   - scope:
@@ -48,6 +54,12 @@ defaults:
     values:
       version: master
       gh: https://github.com/heptio/velero/tree/master
+      layout: "docs"
+  - scope:
+      path: docs/v1.1.0
+    values:
+      version: v1.1.0
+      gh: https://github.com/heptio/velero/tree/v1.1.0
       layout: "docs"
   - scope:
       path: docs/v1.0.0
@@ -122,14 +134,21 @@ defaults:
       gh: https://github.com/heptio/velero/tree/v0.3.0
       layout: "docs"
 
+page_gen:
+  - data: shortlinks
+    template: redirect
+    name: key
+    dir: docs
+
 collections:
   - contributors
   - casestudies
 
 versioning: true
-latest: v1.0.0
+latest: v1.1.0
 versions:
 - master
+- v1.1.0
 - v1.0.0
 - v0.11.0
 - v0.10.0
@@ -158,7 +177,8 @@ plugins:
   - jekyll-optional-front-matter # Parse Markdown files that do not have front-matter callouts
   - jekyll-titles-from-headings # pull the page title from the first Markdown heading when none is specified.
   - jekyll-paginate # pagination object for collections (e.g. posts)
-
+  - jekyll-redirect-from
+  - jekyll-seo-tag
 
 # Include these subdirectories
 include:

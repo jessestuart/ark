@@ -19,7 +19,7 @@ package install
 import (
 	"strings"
 
-	appsv1beta1 "k8s.io/api/apps/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -27,10 +27,12 @@ import (
 type podTemplateOption func(*podTemplateConfig)
 
 type podTemplateConfig struct {
-	image                    string
-	withoutCredentialsVolume bool
-	envVars                  []corev1.EnvVar
-	restoreOnly              bool
+	image       string
+	envVars     []corev1.EnvVar
+	restoreOnly bool
+	annotations map[string]string
+	resources   corev1.ResourceRequirements
+	withSecret  bool
 }
 
 func WithImage(image string) podTemplateOption {
@@ -39,9 +41,9 @@ func WithImage(image string) podTemplateOption {
 	}
 }
 
-func WithoutCredentialsVolume() podTemplateOption {
+func WithAnnotations(annotations map[string]string) podTemplateOption {
 	return func(c *podTemplateConfig) {
-		c.withoutCredentialsVolume = true
+		c.annotations = annotations
 	}
 }
 
@@ -61,13 +63,25 @@ func WithEnvFromSecretKey(varName, secret, key string) podTemplateOption {
 	}
 }
 
+func WithSecret(secretPresent bool) podTemplateOption {
+	return func(c *podTemplateConfig) {
+		c.withSecret = secretPresent
+	}
+}
+
 func WithRestoreOnly() podTemplateOption {
 	return func(c *podTemplateConfig) {
 		c.restoreOnly = true
 	}
 }
 
-func Deployment(namespace string, opts ...podTemplateOption) *appsv1beta1.Deployment {
+func WithResources(resources corev1.ResourceRequirements) podTemplateOption {
+	return func(c *podTemplateConfig) {
+		c.resources = resources
+	}
+}
+
+func Deployment(namespace string, opts ...podTemplateOption) *appsv1.Deployment {
 	// TODO: Add support for server args
 	c := &podTemplateConfig{
 		image: DefaultImage,
@@ -87,18 +101,18 @@ func Deployment(namespace string, opts ...podTemplateOption) *appsv1beta1.Deploy
 	containerLabels := labels()
 	containerLabels["deploy"] = "velero"
 
-	deployment := &appsv1beta1.Deployment{
+	deployment := &appsv1.Deployment{
 		ObjectMeta: objectMeta(namespace, "velero"),
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Deployment",
-			APIVersion: appsv1beta1.SchemeGroupVersion.String(),
+			APIVersion: appsv1.SchemeGroupVersion.String(),
 		},
-		Spec: appsv1beta1.DeploymentSpec{
+		Spec: appsv1.DeploymentSpec{
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"deploy": "velero"}},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      containerLabels,
-					Annotations: podAnnotations(),
+					Annotations: podAnnotations(c.annotations),
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyAlways,
@@ -131,18 +145,15 @@ func Deployment(namespace string, opts ...podTemplateOption) *appsv1beta1.Deploy
 									Value: "/scratch",
 								},
 								{
-									Name:  "GOOGLE_APPLICATION_CREDENTIALS",
-									Value: "/credentials/cloud",
-								},
-								{
-									Name:  "AWS_SHARED_CREDENTIALS_FILE",
-									Value: "/credentials/cloud",
-								},
-								{
-									Name:  "AZURE_CREDENTIALS_FILE",
-									Value: "/credentials/cloud",
+									Name: "VELERO_NAMESPACE",
+									ValueFrom: &corev1.EnvVarSource{
+										FieldRef: &corev1.ObjectFieldSelector{
+											FieldPath: "metadata.namespace",
+										},
+									},
 								},
 							},
+							Resources: c.resources,
 						},
 					},
 					Volumes: []corev1.Volume{
@@ -164,7 +175,7 @@ func Deployment(namespace string, opts ...podTemplateOption) *appsv1beta1.Deploy
 		},
 	}
 
-	if !c.withoutCredentialsVolume {
+	if c.withSecret {
 		deployment.Spec.Template.Spec.Volumes = append(
 			deployment.Spec.Template.Spec.Volumes,
 			corev1.Volume{
@@ -184,6 +195,21 @@ func Deployment(namespace string, opts ...podTemplateOption) *appsv1beta1.Deploy
 				MountPath: "/credentials",
 			},
 		)
+
+		deployment.Spec.Template.Spec.Containers[0].Env = append(deployment.Spec.Template.Spec.Containers[0].Env, []corev1.EnvVar{
+			{
+				Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+				Value: "/credentials/cloud",
+			},
+			{
+				Name:  "AWS_SHARED_CREDENTIALS_FILE",
+				Value: "/credentials/cloud",
+			},
+			{
+				Name:  "AZURE_CREDENTIALS_FILE",
+				Value: "/credentials/cloud",
+			},
+		}...)
 	}
 
 	deployment.Spec.Template.Spec.Containers[0].Env = append(deployment.Spec.Template.Spec.Containers[0].Env, c.envVars...)
