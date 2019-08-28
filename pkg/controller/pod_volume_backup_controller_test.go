@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	velerotest "github.com/heptio/velero/pkg/test"
 )
 
 func TestPVBHandler(t *testing.T) {

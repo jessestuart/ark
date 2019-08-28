@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -37,10 +37,15 @@ const downloadRequestTimeout = 30 * time.Second
 // BindFlags defines a set of output-specific flags within the provided
 // FlagSet.
 func BindFlags(flags *pflag.FlagSet) {
-	flags.StringP("output", "o", "table", "Output display format. For create commands, display the object but do not send it to the server. Valid formats are 'table', 'json', and 'yaml'.")
+	flags.StringP("output", "o", "table", "Output display format. For create commands, display the object but do not send it to the server. Valid formats are 'table', 'json', and 'yaml'. 'table' is not valid for the install command.")
 	labelColumns := flag.NewStringArray()
 	flags.Var(&labelColumns, "label-columns", "a comma-separated list of labels to be displayed as columns")
 	flags.Bool("show-labels", false, "show labels in the last column")
+}
+
+// BindFlagsSimple defines the output format flag only.
+func BindFlagsSimple(flags *pflag.FlagSet) {
+	flags.StringP("output", "o", "table", "Output display format. For create commands, display the object but do not send it to the server. Valid formats are 'table', 'json', and 'yaml'. 'table' is not valid for the install command.")
 }
 
 // ClearOutputFlagDefault sets the current and default value
@@ -84,7 +89,11 @@ func ValidateFlags(cmd *cobra.Command) error {
 func validateOutputFlag(cmd *cobra.Command) error {
 	output := GetOutputFlagValue(cmd)
 	switch output {
-	case "", "table", "json", "yaml":
+	case "", "json", "yaml":
+	case "table":
+		if cmd.Name() == "install" {
+			return errors.New("'table' format is not supported with 'install' command")
+		}
 	default:
 		return errors.Errorf("invalid output format %q - valid values are 'table', 'json', and 'yaml'", output)
 	}
@@ -137,18 +146,19 @@ func printTable(cmd *cobra.Command, obj runtime.Object) (bool, error) {
 		return false, err
 	}
 
-	printer.Handler(backupColumns, nil, printBackup)
-	printer.Handler(backupColumns, nil, printBackupList)
-	printer.Handler(restoreColumns, nil, printRestore)
-	printer.Handler(restoreColumns, nil, printRestoreList)
-	printer.Handler(scheduleColumns, nil, printSchedule)
-	printer.Handler(scheduleColumns, nil, printScheduleList)
-	printer.Handler(resticRepoColumns, nil, printResticRepo)
-	printer.Handler(resticRepoColumns, nil, printResticRepoList)
-	printer.Handler(backupStorageLocationColumns, nil, printBackupStorageLocation)
-	printer.Handler(backupStorageLocationColumns, nil, printBackupStorageLocationList)
-	printer.Handler(volumeSnapshotLocationColumns, nil, printVolumeSnapshotLocation)
-	printer.Handler(volumeSnapshotLocationColumns, nil, printVolumeSnapshotLocationList)
+	printer.TableHandler(backupColumns, printBackup)
+	printer.TableHandler(backupColumns, printBackupList)
+	printer.TableHandler(restoreColumns, printRestore)
+	printer.TableHandler(restoreColumns, printRestoreList)
+	printer.TableHandler(scheduleColumns, printSchedule)
+	printer.TableHandler(scheduleColumns, printScheduleList)
+	printer.TableHandler(resticRepoColumns, printResticRepo)
+	printer.TableHandler(resticRepoColumns, printResticRepoList)
+	printer.TableHandler(backupStorageLocationColumns, printBackupStorageLocation)
+	printer.TableHandler(backupStorageLocationColumns, printBackupStorageLocationList)
+	printer.TableHandler(volumeSnapshotLocationColumns, printVolumeSnapshotLocation)
+	printer.TableHandler(volumeSnapshotLocationColumns, printVolumeSnapshotLocationList)
+	printer.TableHandler(pluginColumns, printPluginList)
 
 	err = printer.PrintObj(obj, os.Stdout)
 	if err != nil {
@@ -162,15 +172,11 @@ func printTable(cmd *cobra.Command, obj runtime.Object) (bool, error) {
 // Velero objects.
 func NewPrinter(cmd *cobra.Command) (*printers.HumanReadablePrinter, error) {
 	options := printers.PrintOptions{
-		NoHeaders:    flag.GetOptionalBoolFlag(cmd, "no-headers"),
 		ShowLabels:   GetShowLabelsValue(cmd),
 		ColumnLabels: GetLabelColumnsValues(cmd),
 	}
 
-	printer := printers.NewHumanReadablePrinter(
-		nil, // decoder, only needed if we want/need to convert unstructured/unknown to typed objects
-		options,
-	)
+	printer := printers.NewTablePrinter(options)
 
 	return printer, nil
 }

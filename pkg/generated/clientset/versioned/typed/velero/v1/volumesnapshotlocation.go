@@ -1,5 +1,5 @@
 /*
-Copyright the Heptio Ark contributors.
+Copyright the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,11 @@ limitations under the License.
 package v1
 
 import (
+	"time"
+
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	scheme "github.com/heptio/velero/pkg/generated/clientset/versioned/scheme"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	rest "k8s.io/client-go/rest"
@@ -38,11 +40,11 @@ type VolumeSnapshotLocationInterface interface {
 	Create(*v1.VolumeSnapshotLocation) (*v1.VolumeSnapshotLocation, error)
 	Update(*v1.VolumeSnapshotLocation) (*v1.VolumeSnapshotLocation, error)
 	UpdateStatus(*v1.VolumeSnapshotLocation) (*v1.VolumeSnapshotLocation, error)
-	Delete(name string, options *meta_v1.DeleteOptions) error
-	DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error
-	Get(name string, options meta_v1.GetOptions) (*v1.VolumeSnapshotLocation, error)
-	List(opts meta_v1.ListOptions) (*v1.VolumeSnapshotLocationList, error)
-	Watch(opts meta_v1.ListOptions) (watch.Interface, error)
+	Delete(name string, options *metav1.DeleteOptions) error
+	DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error
+	Get(name string, options metav1.GetOptions) (*v1.VolumeSnapshotLocation, error)
+	List(opts metav1.ListOptions) (*v1.VolumeSnapshotLocationList, error)
+	Watch(opts metav1.ListOptions) (watch.Interface, error)
 	Patch(name string, pt types.PatchType, data []byte, subresources ...string) (result *v1.VolumeSnapshotLocation, err error)
 	VolumeSnapshotLocationExpansion
 }
@@ -62,7 +64,7 @@ func newVolumeSnapshotLocations(c *VeleroV1Client, namespace string) *volumeSnap
 }
 
 // Get takes name of the volumeSnapshotLocation, and returns the corresponding volumeSnapshotLocation object, and an error if there is any.
-func (c *volumeSnapshotLocations) Get(name string, options meta_v1.GetOptions) (result *v1.VolumeSnapshotLocation, err error) {
+func (c *volumeSnapshotLocations) Get(name string, options metav1.GetOptions) (result *v1.VolumeSnapshotLocation, err error) {
 	result = &v1.VolumeSnapshotLocation{}
 	err = c.client.Get().
 		Namespace(c.ns).
@@ -75,24 +77,34 @@ func (c *volumeSnapshotLocations) Get(name string, options meta_v1.GetOptions) (
 }
 
 // List takes label and field selectors, and returns the list of VolumeSnapshotLocations that match those selectors.
-func (c *volumeSnapshotLocations) List(opts meta_v1.ListOptions) (result *v1.VolumeSnapshotLocationList, err error) {
+func (c *volumeSnapshotLocations) List(opts metav1.ListOptions) (result *v1.VolumeSnapshotLocationList, err error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	result = &v1.VolumeSnapshotLocationList{}
 	err = c.client.Get().
 		Namespace(c.ns).
 		Resource("volumesnapshotlocations").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Do().
 		Into(result)
 	return
 }
 
 // Watch returns a watch.Interface that watches the requested volumeSnapshotLocations.
-func (c *volumeSnapshotLocations) Watch(opts meta_v1.ListOptions) (watch.Interface, error) {
+func (c *volumeSnapshotLocations) Watch(opts metav1.ListOptions) (watch.Interface, error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	opts.Watch = true
 	return c.client.Get().
 		Namespace(c.ns).
 		Resource("volumesnapshotlocations").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Watch()
 }
 
@@ -138,7 +150,7 @@ func (c *volumeSnapshotLocations) UpdateStatus(volumeSnapshotLocation *v1.Volume
 }
 
 // Delete takes name of the volumeSnapshotLocation and deletes it. Returns an error if one occurs.
-func (c *volumeSnapshotLocations) Delete(name string, options *meta_v1.DeleteOptions) error {
+func (c *volumeSnapshotLocations) Delete(name string, options *metav1.DeleteOptions) error {
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("volumesnapshotlocations").
@@ -149,11 +161,16 @@ func (c *volumeSnapshotLocations) Delete(name string, options *meta_v1.DeleteOpt
 }
 
 // DeleteCollection deletes a collection of objects.
-func (c *volumeSnapshotLocations) DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error {
+func (c *volumeSnapshotLocations) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
+	var timeout time.Duration
+	if listOptions.TimeoutSeconds != nil {
+		timeout = time.Duration(*listOptions.TimeoutSeconds) * time.Second
+	}
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("volumesnapshotlocations").
 		VersionedParams(&listOptions, scheme.ParameterCodec).
+		Timeout(timeout).
 		Body(options).
 		Do().
 		Error()

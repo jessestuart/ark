@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -75,6 +75,32 @@ func TestShouldInclude(t *testing.T) {
 			excludes: []string{"foo"},
 			check:    "foo",
 			should:   false,
+		},
+		{
+			name:     "wildcard include",
+			includes: []string{"*.bar"},
+			check:    "foo.bar",
+			should:   true,
+		},
+		{
+			name:     "wildcard include fail",
+			includes: []string{"*.bar"},
+			check:    "bar.foo",
+			should:   false,
+		},
+		{
+			name:     "wildcard exclude",
+			includes: []string{"*"},
+			excludes: []string{"*.bar"},
+			check:    "foo.bar",
+			should:   false,
+		},
+		{
+			name:     "wildcard exclude fail",
+			includes: []string{"*"},
+			excludes: []string{"*.bar"},
+			check:    "bar.foo",
+			should:   true,
 		},
 	}
 

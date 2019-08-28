@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -84,16 +84,9 @@ func InitCommand(repoIdentifier string) *Command {
 	}
 }
 
-func StatsCommand(repoIdentifier string) *Command {
+func SnapshotsCommand(repoIdentifier string) *Command {
 	return &Command{
-		Command:        "stats",
-		RepoIdentifier: repoIdentifier,
-	}
-}
-
-func CheckCommand(repoIdentifier string) *Command {
-	return &Command{
-		Command:        "check",
+		Command:        "snapshots",
 		RepoIdentifier: repoIdentifier,
 	}
 }
@@ -110,5 +103,12 @@ func ForgetCommand(repoIdentifier, snapshotID string) *Command {
 		Command:        "forget",
 		RepoIdentifier: repoIdentifier,
 		Args:           []string{snapshotID},
+	}
+}
+
+func UnlockCommand(repoIdentifier string) *Command {
+	return &Command{
+		Command:        "unlock",
+		RepoIdentifier: repoIdentifier,
 	}
 }

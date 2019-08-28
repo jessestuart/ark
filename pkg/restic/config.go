@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ import (
 	"path"
 	"strings"
 
+	"github.com/pkg/errors"
+
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
 	"github.com/heptio/velero/pkg/cloudprovider/aws"
 	"github.com/heptio/velero/pkg/persistence"
@@ -29,9 +31,9 @@ import (
 type BackendType string
 
 const (
-	AWSBackend   BackendType = "aws"
-	AzureBackend BackendType = "azure"
-	GCPBackend   BackendType = "gcp"
+	AWSBackend   BackendType = "velero.io/aws"
+	AzureBackend BackendType = "velero.io/azure"
+	GCPBackend   BackendType = "velero.io/gcp"
 )
 
 // this func is assigned to a package-level variable so it can be
@@ -40,8 +42,8 @@ var getAWSBucketRegion = aws.GetBucketRegion
 
 // getRepoPrefix returns the prefix of the value of the --repo flag for
 // restic commands, i.e. everything except the "/<repo-name>".
-func getRepoPrefix(location *velerov1api.BackupStorageLocation) string {
-	var provider, bucket, prefix, bucketAndPrefix string
+func getRepoPrefix(location *velerov1api.BackupStorageLocation) (string, error) {
+	var bucket, prefix string
 
 	if location.Spec.ObjectStorage != nil {
 		layout := persistence.NewObjectStoreLayout(location.Spec.ObjectStorage.Prefix)
@@ -49,9 +51,17 @@ func getRepoPrefix(location *velerov1api.BackupStorageLocation) string {
 		bucket = location.Spec.ObjectStorage.Bucket
 		prefix = layout.GetResticDir()
 	}
-	bucketAndPrefix = path.Join(bucket, prefix)
 
-	switch BackendType(location.Spec.Provider) {
+	var provider = location.Spec.Provider
+	if !strings.Contains(provider, "/") {
+		provider = "velero.io/" + provider
+	}
+
+	if repoPrefix := location.Spec.Config["resticRepoPrefix"]; repoPrefix != "" {
+		return repoPrefix, nil
+	}
+
+	switch BackendType(provider) {
 	case AWSBackend:
 		var url string
 		switch {
@@ -68,20 +78,23 @@ func getRepoPrefix(location *velerov1api.BackupStorageLocation) string {
 			url = fmt.Sprintf("s3-%s.amazonaws.com", region)
 		}
 
-		return fmt.Sprintf("s3:%s/%s", url, bucketAndPrefix)
+		return fmt.Sprintf("s3:%s/%s", strings.TrimSuffix(url, "/"), path.Join(bucket, prefix)), nil
 	case AzureBackend:
-		provider = "azure"
+		return fmt.Sprintf("azure:%s:/%s", bucket, prefix), nil
 	case GCPBackend:
-		provider = "gs"
+		return fmt.Sprintf("gs:%s:/%s", bucket, prefix), nil
 	}
 
-	return fmt.Sprintf("%s:%s:/%s", provider, bucket, prefix)
+	return "", errors.New("restic repository prefix (resticRepoPrefix) not specified in backup storage location's config")
 }
 
 // GetRepoIdentifier returns the string to be used as the value of the --repo flag in
 // restic commands for the given repository.
-func GetRepoIdentifier(location *velerov1api.BackupStorageLocation, name string) string {
-	prefix := getRepoPrefix(location)
+func GetRepoIdentifier(location *velerov1api.BackupStorageLocation, name string) (string, error) {
+	prefix, err := getRepoPrefix(location)
+	if err != nil {
+		return "", err
+	}
 
-	return fmt.Sprintf("%s/%s", strings.TrimSuffix(prefix, "/"), name)
+	return fmt.Sprintf("%s/%s", strings.TrimSuffix(prefix, "/"), name), nil
 }

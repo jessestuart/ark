@@ -1,5 +1,5 @@
 /*
-Copyright the Heptio Ark contributors.
+Copyright the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,11 @@ limitations under the License.
 package v1
 
 import (
+	"time"
+
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	scheme "github.com/heptio/velero/pkg/generated/clientset/versioned/scheme"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	rest "k8s.io/client-go/rest"
@@ -38,11 +40,11 @@ type BackupInterface interface {
 	Create(*v1.Backup) (*v1.Backup, error)
 	Update(*v1.Backup) (*v1.Backup, error)
 	UpdateStatus(*v1.Backup) (*v1.Backup, error)
-	Delete(name string, options *meta_v1.DeleteOptions) error
-	DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error
-	Get(name string, options meta_v1.GetOptions) (*v1.Backup, error)
-	List(opts meta_v1.ListOptions) (*v1.BackupList, error)
-	Watch(opts meta_v1.ListOptions) (watch.Interface, error)
+	Delete(name string, options *metav1.DeleteOptions) error
+	DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error
+	Get(name string, options metav1.GetOptions) (*v1.Backup, error)
+	List(opts metav1.ListOptions) (*v1.BackupList, error)
+	Watch(opts metav1.ListOptions) (watch.Interface, error)
 	Patch(name string, pt types.PatchType, data []byte, subresources ...string) (result *v1.Backup, err error)
 	BackupExpansion
 }
@@ -62,7 +64,7 @@ func newBackups(c *VeleroV1Client, namespace string) *backups {
 }
 
 // Get takes name of the backup, and returns the corresponding backup object, and an error if there is any.
-func (c *backups) Get(name string, options meta_v1.GetOptions) (result *v1.Backup, err error) {
+func (c *backups) Get(name string, options metav1.GetOptions) (result *v1.Backup, err error) {
 	result = &v1.Backup{}
 	err = c.client.Get().
 		Namespace(c.ns).
@@ -75,24 +77,34 @@ func (c *backups) Get(name string, options meta_v1.GetOptions) (result *v1.Backu
 }
 
 // List takes label and field selectors, and returns the list of Backups that match those selectors.
-func (c *backups) List(opts meta_v1.ListOptions) (result *v1.BackupList, err error) {
+func (c *backups) List(opts metav1.ListOptions) (result *v1.BackupList, err error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	result = &v1.BackupList{}
 	err = c.client.Get().
 		Namespace(c.ns).
 		Resource("backups").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Do().
 		Into(result)
 	return
 }
 
 // Watch returns a watch.Interface that watches the requested backups.
-func (c *backups) Watch(opts meta_v1.ListOptions) (watch.Interface, error) {
+func (c *backups) Watch(opts metav1.ListOptions) (watch.Interface, error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	opts.Watch = true
 	return c.client.Get().
 		Namespace(c.ns).
 		Resource("backups").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Watch()
 }
 
@@ -138,7 +150,7 @@ func (c *backups) UpdateStatus(backup *v1.Backup) (result *v1.Backup, err error)
 }
 
 // Delete takes name of the backup and deletes it. Returns an error if one occurs.
-func (c *backups) Delete(name string, options *meta_v1.DeleteOptions) error {
+func (c *backups) Delete(name string, options *metav1.DeleteOptions) error {
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("backups").
@@ -149,11 +161,16 @@ func (c *backups) Delete(name string, options *meta_v1.DeleteOptions) error {
 }
 
 // DeleteCollection deletes a collection of objects.
-func (c *backups) DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error {
+func (c *backups) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
+	var timeout time.Duration
+	if listOptions.TimeoutSeconds != nil {
+		timeout = time.Duration(*listOptions.TimeoutSeconds) * time.Second
+	}
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("backups").
 		VersionedParams(&listOptions, scheme.ParameterCodec).
+		Timeout(timeout).
 		Body(options).
 		Do().
 		Error()

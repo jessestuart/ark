@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -24,7 +24,6 @@ import (
 	"github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	kuberrs "k8s.io/apimachinery/pkg/util/errors"
 
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/discovery"
@@ -38,13 +37,12 @@ type groupBackupperFactory interface {
 		backupRequest *Request,
 		dynamicFactory client.DynamicFactory,
 		discoveryHelper discovery.Helper,
-		backedUpItems map[itemKey]struct{},
 		cohabitatingResources map[string]*cohabitatingResource,
 		podCommandExecutor podexec.PodCommandExecutor,
 		tarWriter tarWriter,
 		resticBackupper restic.Backupper,
 		resticSnapshotTracker *pvcSnapshotTracker,
-		blockStoreGetter BlockStoreGetter,
+		volumeSnapshotterGetter VolumeSnapshotterGetter,
 	) groupBackupper
 }
 
@@ -55,26 +53,24 @@ func (f *defaultGroupBackupperFactory) newGroupBackupper(
 	backupRequest *Request,
 	dynamicFactory client.DynamicFactory,
 	discoveryHelper discovery.Helper,
-	backedUpItems map[itemKey]struct{},
 	cohabitatingResources map[string]*cohabitatingResource,
 	podCommandExecutor podexec.PodCommandExecutor,
 	tarWriter tarWriter,
 	resticBackupper restic.Backupper,
 	resticSnapshotTracker *pvcSnapshotTracker,
-	blockStoreGetter BlockStoreGetter,
+	volumeSnapshotterGetter VolumeSnapshotterGetter,
 ) groupBackupper {
 	return &defaultGroupBackupper{
-		log:                   log,
-		backupRequest:         backupRequest,
-		dynamicFactory:        dynamicFactory,
-		discoveryHelper:       discoveryHelper,
-		backedUpItems:         backedUpItems,
-		cohabitatingResources: cohabitatingResources,
-		podCommandExecutor:    podCommandExecutor,
-		tarWriter:             tarWriter,
-		resticBackupper:       resticBackupper,
-		resticSnapshotTracker: resticSnapshotTracker,
-		blockStoreGetter:      blockStoreGetter,
+		log:                     log,
+		backupRequest:           backupRequest,
+		dynamicFactory:          dynamicFactory,
+		discoveryHelper:         discoveryHelper,
+		cohabitatingResources:   cohabitatingResources,
+		podCommandExecutor:      podCommandExecutor,
+		tarWriter:               tarWriter,
+		resticBackupper:         resticBackupper,
+		resticSnapshotTracker:   resticSnapshotTracker,
+		volumeSnapshotterGetter: volumeSnapshotterGetter,
 
 		resourceBackupperFactory: &defaultResourceBackupperFactory{},
 	}
@@ -89,35 +85,18 @@ type defaultGroupBackupper struct {
 	backupRequest            *Request
 	dynamicFactory           client.DynamicFactory
 	discoveryHelper          discovery.Helper
-	backedUpItems            map[itemKey]struct{}
 	cohabitatingResources    map[string]*cohabitatingResource
 	podCommandExecutor       podexec.PodCommandExecutor
 	tarWriter                tarWriter
 	resticBackupper          restic.Backupper
 	resticSnapshotTracker    *pvcSnapshotTracker
 	resourceBackupperFactory resourceBackupperFactory
-	blockStoreGetter         BlockStoreGetter
+	volumeSnapshotterGetter  VolumeSnapshotterGetter
 }
 
 // backupGroup backs up a single API group.
 func (gb *defaultGroupBackupper) backupGroup(group *metav1.APIResourceList) error {
-	var (
-		errs []error
-		log  = gb.log.WithField("group", group.GroupVersion)
-		rb   = gb.resourceBackupperFactory.newResourceBackupper(
-			log,
-			gb.backupRequest,
-			gb.dynamicFactory,
-			gb.discoveryHelper,
-			gb.backedUpItems,
-			gb.cohabitatingResources,
-			gb.podCommandExecutor,
-			gb.tarWriter,
-			gb.resticBackupper,
-			gb.resticSnapshotTracker,
-			gb.blockStoreGetter,
-		)
-	)
+	log := gb.log.WithField("group", group.GroupVersion)
 
 	log.Infof("Backing up group")
 
@@ -132,13 +111,26 @@ func (gb *defaultGroupBackupper) backupGroup(group *metav1.APIResourceList) erro
 		sortCoreGroup(group)
 	}
 
+	rb := gb.resourceBackupperFactory.newResourceBackupper(
+		log,
+		gb.backupRequest,
+		gb.dynamicFactory,
+		gb.discoveryHelper,
+		gb.cohabitatingResources,
+		gb.podCommandExecutor,
+		gb.tarWriter,
+		gb.resticBackupper,
+		gb.resticSnapshotTracker,
+		gb.volumeSnapshotterGetter,
+	)
+
 	for _, resource := range group.APIResources {
 		if err := rb.backupResource(group, resource); err != nil {
-			errs = append(errs, err)
+			log.WithError(err).WithField("resource", resource.String()).Error("Error backing up API resource")
 		}
 	}
 
-	return kuberrs.NewAggregate(errs)
+	return nil
 }
 
 // sortCoreGroup sorts group as a coreGroup.

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,13 +27,21 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/label"
 	"github.com/heptio/velero/pkg/util/boolptr"
 )
+
+type RestoreData struct {
+	Restore                         *velerov1api.Restore
+	Pod                             *corev1api.Pod
+	PodVolumeBackups                []*velerov1api.PodVolumeBackup
+	SourceNamespace, BackupLocation string
+}
 
 // Restorer can execute restic restores of volumes in a pod.
 type Restorer interface {
 	// RestorePodVolumes restores all annotated volumes in a pod.
-	RestorePodVolumes(restore *velerov1api.Restore, pod *corev1api.Pod, sourceNamespace, backupLocation string, log logrus.FieldLogger) []error
+	RestorePodVolumes(RestoreData) []error
 }
 
 type restorer struct {
@@ -83,14 +91,13 @@ func newRestorer(
 	return r
 }
 
-func (r *restorer) RestorePodVolumes(restore *velerov1api.Restore, pod *corev1api.Pod, sourceNamespace, backupLocation string, log logrus.FieldLogger) []error {
-	// get volumes to restore from pod's annotations
-	volumesToRestore := GetPodSnapshotAnnotations(pod)
+func (r *restorer) RestorePodVolumes(data RestoreData) []error {
+	volumesToRestore := GetVolumeBackupsForPod(data.PodVolumeBackups, data.Pod)
 	if len(volumesToRestore) == 0 {
 		return nil
 	}
 
-	repo, err := r.repoEnsurer.EnsureRepo(r.ctx, restore.Namespace, sourceNamespace, backupLocation)
+	repo, err := r.repoEnsurer.EnsureRepo(r.ctx, data.Restore.Namespace, data.SourceNamespace, data.BackupLocation)
 	if err != nil {
 		return []error{err}
 	}
@@ -103,7 +110,7 @@ func (r *restorer) RestorePodVolumes(restore *velerov1api.Restore, pod *corev1ap
 	resultsChan := make(chan *velerov1api.PodVolumeRestore)
 
 	r.resultsLock.Lock()
-	r.results[resultsKey(pod.Namespace, pod.Name)] = resultsChan
+	r.results[resultsKey(data.Pod.Namespace, data.Pod.Name)] = resultsChan
 	r.resultsLock.Unlock()
 
 	var (
@@ -112,7 +119,7 @@ func (r *restorer) RestorePodVolumes(restore *velerov1api.Restore, pod *corev1ap
 	)
 
 	for volume, snapshot := range volumesToRestore {
-		volumeRestore := newPodVolumeRestore(restore, pod, volume, snapshot, backupLocation, repo.Spec.ResticIdentifier)
+		volumeRestore := newPodVolumeRestore(data.Restore, data.Pod, data.BackupLocation, volume, snapshot, repo.Spec.ResticIdentifier)
 
 		if err := errorOnly(r.repoManager.veleroClient.VeleroV1().PodVolumeRestores(volumeRestore.Namespace).Create(volumeRestore)); err != nil {
 			errs = append(errs, errors.WithStack(err))
@@ -135,13 +142,13 @@ ForEachVolume:
 	}
 
 	r.resultsLock.Lock()
-	delete(r.results, resultsKey(pod.Namespace, pod.Name))
+	delete(r.results, resultsKey(data.Pod.Namespace, data.Pod.Name))
 	r.resultsLock.Unlock()
 
 	return errs
 }
 
-func newPodVolumeRestore(restore *velerov1api.Restore, pod *corev1api.Pod, volume, snapshot, backupLocation, repoIdentifier string) *velerov1api.PodVolumeRestore {
+func newPodVolumeRestore(restore *velerov1api.Restore, pod *corev1api.Pod, backupLocation, volume, snapshot, repoIdentifier string) *velerov1api.PodVolumeRestore {
 	return &velerov1api.PodVolumeRestore{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:    restore.Namespace,
@@ -156,7 +163,7 @@ func newPodVolumeRestore(restore *velerov1api.Restore, pod *corev1api.Pod, volum
 				},
 			},
 			Labels: map[string]string{
-				velerov1api.RestoreNameLabel: restore.Name,
+				velerov1api.RestoreNameLabel: label.GetValidName(restore.Name),
 				velerov1api.RestoreUIDLabel:  string(restore.UID),
 				velerov1api.PodUIDLabel:      string(pod.UID),
 			},

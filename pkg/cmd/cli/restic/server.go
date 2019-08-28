@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,9 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	kubeinformers "k8s.io/client-go/informers"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/client-go/kubernetes"
@@ -39,24 +41,28 @@ import (
 	clientset "github.com/heptio/velero/pkg/generated/clientset/versioned"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
 	"github.com/heptio/velero/pkg/restic"
+	"github.com/heptio/velero/pkg/util/filesystem"
 	"github.com/heptio/velero/pkg/util/logging"
 )
 
 func NewServerCommand(f client.Factory) *cobra.Command {
 	logLevelFlag := logging.LogLevelFlag(logrus.InfoLevel)
+	formatFlag := logging.NewFormatFlag()
 
 	command := &cobra.Command{
-		Use:   "server",
-		Short: "Run the velero restic server",
-		Long:  "Run the velero restic server",
+		Use:    "server",
+		Short:  "Run the velero restic server",
+		Long:   "Run the velero restic server",
+		Hidden: true,
 		Run: func(c *cobra.Command, args []string) {
 			logLevel := logLevelFlag.Parse()
 			logrus.Infof("Setting log-level to %s", strings.ToUpper(logLevel.String()))
 
-			logger := logging.DefaultLogger(logLevel)
-			logger.Infof("Starting Velero restic server %s", buildinfo.FormattedGitSHA())
+			logger := logging.DefaultLogger(logLevel, formatFlag.Parse())
+			logger.Infof("Starting Velero restic server %s (%s)", buildinfo.Version, buildinfo.FormattedGitSHA())
 
-			s, err := newResticServer(logger, fmt.Sprintf("%s-%s", c.Parent().Name(), c.Name()))
+			f.SetBasename(fmt.Sprintf("%s-%s", c.Parent().Name(), c.Name()))
+			s, err := newResticServer(logger, f)
 			cmd.CheckError(err)
 
 			s.run()
@@ -64,6 +70,7 @@ func NewServerCommand(f client.Factory) *cobra.Command {
 	}
 
 	command.Flags().Var(logLevelFlag, "log-level", fmt.Sprintf("the level at which to log. Valid values are %s.", strings.Join(logLevelFlag.AllowedValues(), ", ")))
+	command.Flags().Var(formatFlag, "log-format", fmt.Sprintf("the format for log output. Valid values are %s.", strings.Join(formatFlag.AllowedValues(), ", ")))
 
 	return command
 }
@@ -78,22 +85,19 @@ type resticServer struct {
 	logger                logrus.FieldLogger
 	ctx                   context.Context
 	cancelFunc            context.CancelFunc
+	fileSystem            filesystem.Interface
 }
 
-func newResticServer(logger logrus.FieldLogger, baseName string) (*resticServer, error) {
-	clientConfig, err := client.Config("", "", baseName)
+func newResticServer(logger logrus.FieldLogger, factory client.Factory) (*resticServer, error) {
+
+	kubeClient, err := factory.KubeClient()
 	if err != nil {
 		return nil, err
 	}
 
-	kubeClient, err := kubernetes.NewForConfig(clientConfig)
+	veleroClient, err := factory.Client()
 	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	veleroClient, err := clientset.NewForConfig(clientConfig)
-	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
 	// use a stand-alone pod informer because we want to use a field selector to
@@ -116,7 +120,7 @@ func newResticServer(logger logrus.FieldLogger, baseName string) (*resticServer,
 	// to fully-encrypted backups and have unique keys per repository.
 	secretInformer := corev1informers.NewFilteredSecretInformer(
 		kubeClient,
-		os.Getenv("VELERO_NAMESPACE"),
+		factory.Namespace(),
 		0,
 		cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc},
 		func(opts *metav1.ListOptions) {
@@ -126,17 +130,24 @@ func newResticServer(logger logrus.FieldLogger, baseName string) (*resticServer,
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 
-	return &resticServer{
+	s := &resticServer{
 		kubeClient:            kubeClient,
 		veleroClient:          veleroClient,
-		veleroInformerFactory: informers.NewFilteredSharedInformerFactory(veleroClient, 0, os.Getenv("VELERO_NAMESPACE"), nil),
+		veleroInformerFactory: informers.NewFilteredSharedInformerFactory(veleroClient, 0, factory.Namespace(), nil),
 		kubeInformerFactory:   kubeinformers.NewSharedInformerFactory(kubeClient, 0),
 		podInformer:           podInformer,
 		secretInformer:        secretInformer,
 		logger:                logger,
 		ctx:                   ctx,
 		cancelFunc:            cancelFunc,
-	}, nil
+		fileSystem:            filesystem.NewFileSystem(),
+	}
+
+	if err := s.validatePodVolumesHostPath(); err != nil {
+		return nil, err
+	}
+
+	return s, nil
 }
 
 func (s *resticServer) run() {
@@ -153,6 +164,7 @@ func (s *resticServer) run() {
 		s.podInformer,
 		s.secretInformer,
 		s.kubeInformerFactory.Core().V1().PersistentVolumeClaims(),
+		s.kubeInformerFactory.Core().V1().PersistentVolumes(),
 		s.veleroInformerFactory.Velero().V1().BackupStorageLocations(),
 		os.Getenv("NODE_NAME"),
 	)
@@ -169,6 +181,7 @@ func (s *resticServer) run() {
 		s.podInformer,
 		s.secretInformer,
 		s.kubeInformerFactory.Core().V1().PersistentVolumeClaims(),
+		s.kubeInformerFactory.Core().V1().PersistentVolumes(),
 		s.veleroInformerFactory.Velero().V1().BackupStorageLocations(),
 		os.Getenv("NODE_NAME"),
 	)
@@ -189,4 +202,51 @@ func (s *resticServer) run() {
 
 	s.logger.Info("Waiting for all controllers to shut down gracefully")
 	wg.Wait()
+}
+
+// validatePodVolumesHostPath validates that the pod volumes path contains a
+// directory for each Pod running on this node
+func (s *resticServer) validatePodVolumesHostPath() error {
+	files, err := s.fileSystem.ReadDir("/host_pods/")
+	if err != nil {
+		return errors.Wrap(err, "could not read pod volumes host path")
+	}
+
+	// create a map of directory names inside the pod volumes path
+	dirs := sets.NewString()
+	for _, f := range files {
+		if f.IsDir() {
+			dirs.Insert(f.Name())
+		}
+	}
+
+	pods, err := s.kubeClient.CoreV1().Pods("").List(metav1.ListOptions{FieldSelector: fmt.Sprintf("spec.nodeName=%s,status.phase=Running", os.Getenv("NODE_NAME"))})
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	valid := true
+	for _, pod := range pods.Items {
+		dirName := string(pod.GetUID())
+
+		// if the pod is a mirror pod, the directory name is the hash value of the
+		// mirror pod annotation
+		if hash, ok := pod.GetAnnotations()[v1.MirrorPodAnnotationKey]; ok {
+			dirName = hash
+		}
+
+		if !dirs.Has(dirName) {
+			valid = false
+			s.logger.WithFields(logrus.Fields{
+				"pod":  fmt.Sprintf("%s/%s", pod.GetNamespace(), pod.GetName()),
+				"path": "/host_pods/" + dirName,
+			}).Debug("could not find volumes for pod in host path")
+		}
+	}
+
+	if !valid {
+		return errors.New("unexpected directory structure for host-pods volume, ensure that the host-pods volume corresponds to the pods subdirectory of the kubelet root directory")
+	}
+
+	return nil
 }

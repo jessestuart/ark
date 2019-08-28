@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -57,6 +57,15 @@ type PodVolumeRestoreStatus struct {
 
 	// Message is a message about the pod volume restore's status.
 	Message string `json:"message"`
+
+	// StartTimestamp records the time a restore was started.
+	// The server's time is used for StartTimestamps
+	StartTimestamp metav1.Time `json:"startTimestamp"`
+
+	// CompletionTimestamp records the time a restore was completed.
+	// Completion time is recorded even on failed restores.
+	// The server's time is used for CompletionTimestamps
+	CompletionTimestamp metav1.Time `json:"completionTimestamp"`
 }
 
 // +genclient

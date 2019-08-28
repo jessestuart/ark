@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -18,12 +18,12 @@ package output
 
 import (
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/kubernetes/pkg/printers"
 
@@ -31,25 +31,38 @@ import (
 )
 
 var (
-	backupColumns = []string{"NAME", "STATUS", "CREATED", "EXPIRES", "STORAGE LOCATION", "SELECTOR"}
+	backupColumns = []metav1.TableColumnDefinition{
+		// name needs Type and Format defined for the decorator to identify it:
+		// https://github.com/kubernetes/kubernetes/blob/v1.15.3/pkg/printers/tableprinter.go#L204
+		{Name: "Name", Type: "string", Format: "name"},
+		{Name: "Status"},
+		{Name: "Created"},
+		{Name: "Expires"},
+		{Name: "Storage Location"},
+		{Name: "Selector"},
+	}
 )
 
-func printBackupList(list *velerov1api.BackupList, w io.Writer, options printers.PrintOptions) error {
+func printBackupList(list *velerov1api.BackupList, options printers.PrintOptions) ([]metav1.TableRow, error) {
 	sortBackupsByPrefixAndTimestamp(list)
+	rows := make([]metav1.TableRow, 0, len(list.Items))
 
 	for i := range list.Items {
-		if err := printBackup(&list.Items[i], w, options); err != nil {
-			return err
+		r, err := printBackup(&list.Items[i], options)
+		if err != nil {
+			return nil, err
 		}
+		rows = append(rows, r...)
 	}
-	return nil
+	return rows, nil
 }
 
+// sort by default alphabetically, but if backups stem from a common schedule
+// (detected by the presence of a 14-digit timestamp suffix), then within that
+// group, sort by newest to oldest (i.e. prefix ASC, suffix DESC)
+var timestampSuffix = regexp.MustCompile("-[0-9]{14}$")
+
 func sortBackupsByPrefixAndTimestamp(list *velerov1api.BackupList) {
-	// sort by default alphabetically, but if backups stem from a common schedule
-	// (detected by the presence of a 14-digit timestamp suffix), then within that
-	// group, sort by newest to oldest (i.e. prefix ASC, suffix DESC)
-	timestampSuffix := regexp.MustCompile("-[0-9]{14}$")
 
 	sort.Slice(list.Items, func(i, j int) bool {
 		iSuffixIndex := timestampSuffix.FindStringIndex(list.Items[i].Name)
@@ -70,13 +83,9 @@ func sortBackupsByPrefixAndTimestamp(list *velerov1api.BackupList) {
 	})
 }
 
-func printBackup(backup *velerov1api.Backup, w io.Writer, options printers.PrintOptions) error {
-	name := printers.FormatResourceName(options.Kind, backup.Name, options.WithKind)
-
-	if options.WithNamespace {
-		if _, err := fmt.Fprintf(w, "%s\t", backup.Namespace); err != nil {
-			return err
-		}
+func printBackup(backup *velerov1api.Backup, options printers.PrintOptions) ([]metav1.TableRow, error) {
+	row := metav1.TableRow{
+		Object: runtime.RawExtension{Object: backup},
 	}
 
 	expiration := backup.Status.Expiration.Time
@@ -84,26 +93,27 @@ func printBackup(backup *velerov1api.Backup, w io.Writer, options printers.Print
 		expiration = backup.CreationTimestamp.Add(backup.Spec.TTL.Duration)
 	}
 
-	status := backup.Status.Phase
+	status := string(backup.Status.Phase)
 	if status == "" {
-		status = velerov1api.BackupPhaseNew
+		status = string(velerov1api.BackupPhaseNew)
 	}
 	if backup.DeletionTimestamp != nil && !backup.DeletionTimestamp.Time.IsZero() {
 		status = "Deleting"
 	}
+	if status == string(velerov1api.BackupPhasePartiallyFailed) {
+		if backup.Status.Errors == 1 {
+			status = fmt.Sprintf("%s (1 error)", status)
+		} else {
+			status = fmt.Sprintf("%s (%d errors)", status, backup.Status.Errors)
+		}
+
+	}
 
 	location := backup.Spec.StorageLocation
 
-	if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s", name, status, backup.Status.StartTimestamp.Time, humanReadableTimeFromNow(expiration), location, metav1.FormatLabelSelector(backup.Spec.LabelSelector)); err != nil {
-		return err
-	}
+	row.Cells = append(row.Cells, backup.Name, status, backup.Status.StartTimestamp.Time, humanReadableTimeFromNow(expiration), location, metav1.FormatLabelSelector(backup.Spec.LabelSelector))
 
-	if _, err := fmt.Fprint(w, printers.AppendLabels(backup.Labels, options.ColumnLabels)); err != nil {
-		return err
-	}
-
-	_, err := fmt.Fprint(w, printers.AppendAllLabels(options.ShowLabels, backup.Labels))
-	return err
+	return []metav1.TableRow{row}, nil
 }
 
 func humanReadableTimeFromNow(when time.Time) string {

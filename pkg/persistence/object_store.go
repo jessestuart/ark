@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,17 +25,25 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/satori/uuid"
+	uuid "github.com/satori/go.uuid"
 	"github.com/sirupsen/logrus"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	"github.com/heptio/velero/pkg/cloudprovider"
 	"github.com/heptio/velero/pkg/generated/clientset/versioned/scheme"
+	"github.com/heptio/velero/pkg/plugin/velero"
 	"github.com/heptio/velero/pkg/volume"
 )
+
+type BackupInfo struct {
+	Name string
+	Metadata,
+	Contents,
+	Log,
+	PodVolumeBackups,
+	VolumeSnapshots,
+	BackupResourceList io.Reader
+}
 
 // BackupStore defines operations for creating, retrieving, and deleting
 // Velero backup and restore data in/from a persistent backup store.
@@ -45,10 +53,15 @@ type BackupStore interface {
 
 	ListBackups() ([]string, error)
 
-	PutBackup(name string, metadata, contents, log, volumeSnapshots io.Reader) error
+	PutBackup(info BackupInfo) error
 	GetBackupMetadata(name string) (*velerov1api.Backup, error)
 	GetBackupVolumeSnapshots(name string) ([]*volume.Snapshot, error)
+	GetPodVolumeBackups(name string) ([]*velerov1api.PodVolumeBackup, error)
 	GetBackupContents(name string) (io.ReadCloser, error)
+
+	// BackupExists checks if the backup metadata file exists in object storage.
+	BackupExists(bucket, backupName string) (bool, error)
+
 	DeleteBackup(name string) error
 
 	PutRestoreLog(backup, restore string, log io.Reader) error
@@ -62,16 +75,16 @@ type BackupStore interface {
 const DownloadURLTTL = 10 * time.Minute
 
 type objectBackupStore struct {
-	objectStore cloudprovider.ObjectStore
+	objectStore velero.ObjectStore
 	bucket      string
 	layout      *ObjectStoreLayout
 	logger      logrus.FieldLogger
 }
 
-// ObjectStoreGetter is a type that can get a cloudprovider.ObjectStore
+// ObjectStoreGetter is a type that can get a velero.ObjectStore
 // from a provider name.
 type ObjectStoreGetter interface {
-	GetObjectStore(provider string) (cloudprovider.ObjectStore, error)
+	GetObjectStore(provider string) (velero.ObjectStore, error)
 }
 
 func NewObjectBackupStore(location *velerov1api.BackupStorageLocation, objectStoreGetter ObjectStoreGetter, logger logrus.FieldLogger) (BackupStore, error) {
@@ -83,19 +96,31 @@ func NewObjectBackupStore(location *velerov1api.BackupStorageLocation, objectSto
 		return nil, errors.New("object storage provider name must not be empty")
 	}
 
-	objectStore, err := objectStoreGetter.GetObjectStore(location.Spec.Provider)
-	if err != nil {
-		return nil, err
+	// trim off any leading/trailing slashes
+	bucket := strings.Trim(location.Spec.ObjectStorage.Bucket, "/")
+	prefix := strings.Trim(location.Spec.ObjectStorage.Prefix, "/")
+
+	// if there are any slashes in the middle of 'bucket', the user
+	// probably put <bucket>/<prefix> in the bucket field, which we
+	// don't support.
+	if strings.Contains(bucket, "/") {
+		return nil, errors.Errorf("backup storage location's bucket name %q must not contain a '/' (if using a prefix, put it in the 'Prefix' field instead)", location.Spec.ObjectStorage.Bucket)
 	}
 
-	// add the bucket name to the config map so that object stores can use
-	// it when initializing. The AWS object store uses this to determine the
-	// bucket's region when setting up its client.
+	// add the bucket name and prefix to the config map so that object stores
+	// can use them when initializing. The AWS object store uses the bucket
+	// name to determine the bucket's region when setting up its client.
 	if location.Spec.ObjectStorage != nil {
 		if location.Spec.Config == nil {
 			location.Spec.Config = make(map[string]string)
 		}
-		location.Spec.Config["bucket"] = location.Spec.ObjectStorage.Bucket
+		location.Spec.Config["bucket"] = bucket
+		location.Spec.Config["prefix"] = prefix
+	}
+
+	objectStore, err := objectStoreGetter.GetObjectStore(location.Spec.Provider)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := objectStore.Init(location.Spec.Config); err != nil {
@@ -103,14 +128,14 @@ func NewObjectBackupStore(location *velerov1api.BackupStorageLocation, objectSto
 	}
 
 	log := logger.WithFields(logrus.Fields(map[string]interface{}{
-		"bucket": location.Spec.ObjectStorage.Bucket,
-		"prefix": location.Spec.ObjectStorage.Prefix,
+		"bucket": bucket,
+		"prefix": prefix,
 	}))
 
 	return &objectBackupStore{
 		objectStore: objectStore,
-		bucket:      location.Spec.ObjectStorage.Bucket,
-		layout:      NewObjectStoreLayout(location.Spec.ObjectStorage.Prefix),
+		bucket:      bucket,
+		layout:      NewObjectStoreLayout(prefix),
 		logger:      log,
 	}, nil
 }
@@ -152,7 +177,7 @@ func (s *objectBackupStore) ListBackups() ([]string, error) {
 	output := make([]string, 0, len(prefixes))
 
 	for _, prefix := range prefixes {
-		// values returned from a call to cloudprovider.ObjectStore's
+		// values returned from a call to ObjectStore's
 		// ListCommonPrefixes method return the *full* prefix, inclusive
 		// of s.backupsPrefix, and include the delimiter ("/") as a suffix. Trim
 		// each of those off to get the backup name.
@@ -164,92 +189,75 @@ func (s *objectBackupStore) ListBackups() ([]string, error) {
 	return output, nil
 }
 
-func (s *objectBackupStore) PutBackup(name string, metadata, contents, log, volumeSnapshots io.Reader) error {
-	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupLogKey(name), log); err != nil {
+func (s *objectBackupStore) PutBackup(info BackupInfo) error {
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupLogKey(info.Name), info.Log); err != nil {
 		// Uploading the log file is best-effort; if it fails, we log the error but it doesn't impact the
 		// backup's status.
-		s.logger.WithError(err).WithField("backup", name).Error("Error uploading log file")
+		s.logger.WithError(err).WithField("backup", info.Name).Error("Error uploading log file")
 	}
 
-	if metadata == nil {
+	if info.Metadata == nil {
 		// If we don't have metadata, something failed, and there's no point in continuing. An object
 		// storage bucket that is missing the metadata file can't be restored, nor can its logs be
 		// viewed.
 		return nil
 	}
 
-	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupMetadataKey(name), metadata); err != nil {
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupMetadataKey(info.Name), info.Metadata); err != nil {
 		// failure to upload metadata file is a hard-stop
 		return err
 	}
 
-	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupContentsKey(name), contents); err != nil {
-		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(name))
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupContentsKey(info.Name), info.Contents); err != nil {
+		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(info.Name))
 		return kerrors.NewAggregate([]error{err, deleteErr})
 	}
 
-	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupVolumeSnapshotsKey(name), volumeSnapshots); err != nil {
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getPodVolumeBackupsKey(info.Name), info.PodVolumeBackups); err != nil {
 		errs := []error{err}
 
-		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupContentsKey(name))
+		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupContentsKey(info.Name))
 		errs = append(errs, deleteErr)
 
-		deleteErr = s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(name))
+		deleteErr = s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(info.Name))
+		errs = append(errs, deleteErr)
+
+		return kerrors.NewAggregate(errs)
+	}
+
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupVolumeSnapshotsKey(info.Name), info.VolumeSnapshots); err != nil {
+		errs := []error{err}
+
+		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupContentsKey(info.Name))
+		errs = append(errs, deleteErr)
+
+		deleteErr = s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(info.Name))
+		errs = append(errs, deleteErr)
+
+		return kerrors.NewAggregate(errs)
+	}
+
+	if err := seekAndPutObject(s.objectStore, s.bucket, s.layout.getBackupResourceListKey(info.Name), info.BackupResourceList); err != nil {
+		errs := []error{err}
+
+		deleteErr := s.objectStore.DeleteObject(s.bucket, s.layout.getBackupContentsKey(info.Name))
+		errs = append(errs, deleteErr)
+
+		deleteErr = s.objectStore.DeleteObject(s.bucket, s.layout.getBackupMetadataKey(info.Name))
 		errs = append(errs, deleteErr)
 
 		return kerrors.NewAggregate(errs)
 	}
 
 	if err := s.putRevision(); err != nil {
-		s.logger.WithField("backup", name).WithError(err).Warn("Error updating backup store revision")
+		s.logger.WithField("backup", info.Name).WithError(err).Warn("Error updating backup store revision")
 	}
 
 	return nil
 }
 
 func (s *objectBackupStore) GetBackupMetadata(name string) (*velerov1api.Backup, error) {
-	// We need to determine whether the backup metadata file is the legacy ark.heptio.com
-	// one (named ark-backup.json) or the current velero.io one (named velero-backup.json).
-	// Listing all objects in the backup directory and searching for them is easiest, because
-	// GetObject() calls don't immediately return an error if the object is not found due to
-	// a bug related to the plugin infrastructure, and even if they did, it's difficult to
-	// distinguish between a 404 and a different error.
-	//
-	// TODO once the plugin/error-related bugs are fixed, simplify this code by just calling
-	// GetObject() to check existence of the metadata files.
-	keys, err := s.objectStore.ListObjects(s.bucket, s.layout.getBackupDir(name))
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	var (
-		metadataKey       = s.layout.getBackupMetadataKey(name)
-		legacyMetadataKey = s.layout.getLegacyBackupMetadataKey(name)
-		legacyMetadata    bool
-	)
-
-	var found bool
-	for _, key := range keys {
-		switch key {
-		case metadataKey:
-			found = true
-		case legacyMetadataKey:
-			found = true
-			legacyMetadata = true
-		}
-
-		if found {
-			break
-		}
-	}
-
-	if legacyMetadata {
-		s.logger.WithField("backup", name).Debug("Legacy metadata file found, converting")
-		return s.getAndConvertLegacyBackupMetadata(legacyMetadataKey)
-	}
-
-	// TODO(1.0): remove everything in this method from here up, except the metadataKey
-	// declaration.
+	metadataKey := s.layout.getBackupMetadataKey(name)
 
 	res, err := s.objectStore.GetObject(s.bucket, metadataKey)
 	if err != nil {
@@ -276,101 +284,84 @@ func (s *objectBackupStore) GetBackupMetadata(name string) (*velerov1api.Backup,
 	return backupObj, nil
 }
 
-// TODO(1.0): remove
-func (s *objectBackupStore) getAndConvertLegacyBackupMetadata(key string) (*velerov1api.Backup, error) {
-	obj, err := s.objectStore.GetObject(s.bucket, key)
-	if err != nil {
-		return nil, err
-	}
-
-	data, err := ioutil.ReadAll(obj)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	res := new(unstructured.Unstructured)
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	res.SetAPIVersion(velerov1api.SchemeGroupVersion.String())
-	res.SetLabels(convertMapKeys(res.GetLabels(), "ark.heptio.com", "velero.io"))
-	res.SetLabels(convertMapKeys(res.GetLabels(), "ark-schedule", velerov1api.ScheduleNameLabel))
-	res.SetAnnotations(convertMapKeys(res.GetAnnotations(), "ark.heptio.com", "velero.io"))
-
-	backup := new(velerov1api.Backup)
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(res.Object, backup); err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	return backup, nil
-}
-
-// TODO(1.0): remove
-func convertMapKeys(m map[string]string, find, replace string) map[string]string {
-	for k, v := range m {
-		if updatedKey := strings.Replace(k, find, replace, -1); updatedKey != k {
-			m[updatedKey] = v
-			delete(m, k)
-		}
-	}
-
-	return m
-}
-
-func keyExists(objectStore cloudprovider.ObjectStore, bucket, prefix, key string) (bool, error) {
-	keys, err := objectStore.ListObjects(bucket, prefix)
-	if err != nil {
-		return false, err
-	}
-
-	var found bool
-	for _, existing := range keys {
-		if key == existing {
-			found = true
-			break
-		}
-	}
-
-	return found, nil
-}
-
 func (s *objectBackupStore) GetBackupVolumeSnapshots(name string) ([]*volume.Snapshot, error) {
-	key := s.layout.getBackupVolumeSnapshotsKey(name)
-
 	// if the volumesnapshots file doesn't exist, we don't want to return an error, since
 	// a legacy backup or a backup with no snapshots would not have this file, so check for
 	// its existence before attempting to get its contents.
-	ok, err := keyExists(s.objectStore, s.bucket, s.layout.getBackupDir(name), key)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	if !ok {
-		return nil, nil
-	}
-
-	res, err := s.objectStore.GetObject(s.bucket, key)
+	res, err := tryGet(s.objectStore, s.bucket, s.layout.getBackupVolumeSnapshotsKey(name))
 	if err != nil {
 		return nil, err
 	}
+	if res == nil {
+		return nil, nil
+	}
 	defer res.Close()
 
-	gzr, err := gzip.NewReader(res)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-	defer gzr.Close()
-
 	var volumeSnapshots []*volume.Snapshot
-	if err := json.NewDecoder(gzr).Decode(&volumeSnapshots); err != nil {
-		return nil, errors.Wrap(err, "error decoding object data")
+	if err := decode(res, &volumeSnapshots); err != nil {
+		return nil, err
 	}
 
 	return volumeSnapshots, nil
 }
 
+// tryGet returns the object with the given key if it exists, nil if it does not exist,
+// or an error if it was unable to check existence or get the object.
+func tryGet(objectStore velero.ObjectStore, bucket, key string) (io.ReadCloser, error) {
+	exists, err := objectStore.ObjectExists(bucket, key)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	if !exists {
+		return nil, nil
+	}
+
+	return objectStore.GetObject(bucket, key)
+}
+
+// decode extracts a .json.gz file reader into the object pointed to
+// by 'into'.
+func decode(jsongzReader io.Reader, into interface{}) error {
+	gzr, err := gzip.NewReader(jsongzReader)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	defer gzr.Close()
+
+	if err := json.NewDecoder(gzr).Decode(into); err != nil {
+		return errors.Wrap(err, "error decoding object data")
+	}
+
+	return nil
+}
+
+func (s *objectBackupStore) GetPodVolumeBackups(name string) ([]*velerov1api.PodVolumeBackup, error) {
+	// if the podvolumebackups file doesn't exist, we don't want to return an error, since
+	// a legacy backup or a backup with no pod volume backups would not have this file, so
+	// check for its existence before attempting to get its contents.
+	res, err := tryGet(s.objectStore, s.bucket, s.layout.getPodVolumeBackupsKey(name))
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	defer res.Close()
+
+	var podVolumeBackups []*velerov1api.PodVolumeBackup
+	if err := decode(res, &podVolumeBackups); err != nil {
+		return nil, err
+	}
+
+	return podVolumeBackups, nil
+}
+
 func (s *objectBackupStore) GetBackupContents(name string) (io.ReadCloser, error) {
 	return s.objectStore.GetObject(s.bucket, s.layout.getBackupContentsKey(name))
+}
+
+func (s *objectBackupStore) BackupExists(bucket, backupName string) (bool, error) {
+	return s.objectStore.ObjectExists(bucket, s.layout.getBackupMetadataKey(backupName))
 }
 
 func (s *objectBackupStore) DeleteBackup(name string) error {
@@ -435,6 +426,8 @@ func (s *objectBackupStore) GetDownloadURL(target velerov1api.DownloadTarget) (s
 		return s.objectStore.CreateSignedURL(s.bucket, s.layout.getBackupLogKey(target.Name), DownloadURLTTL)
 	case velerov1api.DownloadTargetKindBackupVolumeSnapshots:
 		return s.objectStore.CreateSignedURL(s.bucket, s.layout.getBackupVolumeSnapshotsKey(target.Name), DownloadURLTTL)
+	case velerov1api.DownloadTargetKindBackupResourceList:
+		return s.objectStore.CreateSignedURL(s.bucket, s.layout.getBackupResourceListKey(target.Name), DownloadURLTTL)
 	case velerov1api.DownloadTargetKindRestoreLog:
 		return s.objectStore.CreateSignedURL(s.bucket, s.layout.getRestoreLogKey(target.Name), DownloadURLTTL)
 	case velerov1api.DownloadTargetKindRestoreResults:
@@ -478,7 +471,7 @@ func seekToBeginning(r io.Reader) error {
 	return err
 }
 
-func seekAndPutObject(objectStore cloudprovider.ObjectStore, bucket, key string, file io.Reader) error {
+func seekAndPutObject(objectStore velero.ObjectStore, bucket, key string, file io.Reader) error {
 	if file == nil {
 		return nil
 	}

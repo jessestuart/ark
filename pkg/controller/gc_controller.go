@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import (
 	velerov1client "github.com/heptio/velero/pkg/generated/clientset/versioned/typed/velero/v1"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions/velero/v1"
 	listers "github.com/heptio/velero/pkg/generated/listers/velero/v1"
+	"github.com/heptio/velero/pkg/label"
 )
 
 const (
@@ -44,6 +45,7 @@ type gcController struct {
 	backupLister              listers.BackupLister
 	deleteBackupRequestLister listers.DeleteBackupRequestLister
 	deleteBackupRequestClient velerov1client.DeleteBackupRequestsGetter
+	backupLocationLister      listers.BackupStorageLocationLister
 
 	clock clock.Clock
 }
@@ -54,6 +56,7 @@ func NewGCController(
 	backupInformer informers.BackupInformer,
 	deleteBackupRequestInformer informers.DeleteBackupRequestInformer,
 	deleteBackupRequestClient velerov1client.DeleteBackupRequestsGetter,
+	backupLocationInformer informers.BackupStorageLocationInformer,
 ) Interface {
 	c := &gcController{
 		genericController:         newGenericController("gc-controller", logger),
@@ -61,12 +64,14 @@ func NewGCController(
 		backupLister:              backupInformer.Lister(),
 		deleteBackupRequestLister: deleteBackupRequestInformer.Lister(),
 		deleteBackupRequestClient: deleteBackupRequestClient,
+		backupLocationLister:      backupLocationInformer.Lister(),
 	}
 
 	c.syncHandler = c.processQueueItem
 	c.cacheSyncWaiters = append(c.cacheSyncWaiters,
 		backupInformer.Informer().HasSynced,
 		deleteBackupRequestInformer.Informer().HasSynced,
+		backupLocationInformer.Informer().HasSynced,
 	)
 
 	c.resyncPeriod = GCSyncPeriod
@@ -132,8 +137,21 @@ func (c *gcController) processQueueItem(key string) error {
 
 	log.Info("Backup has expired")
 
+	loc, err := c.backupLocationLister.BackupStorageLocations(ns).Get(backup.Spec.StorageLocation)
+	if apierrors.IsNotFound(err) {
+		log.Warnf("Backup cannot be garbage-collected because backup storage location %s does not exist", backup.Spec.StorageLocation)
+	}
+	if err != nil {
+		return errors.Wrap(err, "error getting backup storage location")
+	}
+
+	if loc.Spec.AccessMode == velerov1api.BackupStorageLocationAccessModeReadOnly {
+		log.Infof("Backup cannot be garbage-collected because backup storage location %s is currently in read-only mode", loc.Name)
+		return nil
+	}
+
 	selector := labels.SelectorFromSet(labels.Set(map[string]string{
-		velerov1api.BackupNameLabel: backup.Name,
+		velerov1api.BackupNameLabel: label.GetValidName(backup.Name),
 		velerov1api.BackupUIDLabel:  string(backup.UID),
 	}))
 

@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,14 +27,15 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/heptio/velero/pkg/util/test"
+	"github.com/heptio/velero/pkg/plugin/velero"
+	"github.com/heptio/velero/pkg/test"
 )
 
 func TestServiceAccountActionAppliesTo(t *testing.T) {
 	action := NewServiceAccountAction(test.NewLogger())
 	actual, err := action.AppliesTo()
 	require.NoError(t, err)
-	assert.Equal(t, ResourceSelector{IncludedResources: []string{"serviceaccounts"}}, actual)
+	assert.Equal(t, velero.ResourceSelector{IncludedResources: []string{"serviceaccounts"}}, actual)
 }
 
 func TestServiceAccountActionExecute(t *testing.T) {
@@ -89,12 +90,15 @@ func TestServiceAccountActionExecute(t *testing.T) {
 			require.NoError(t, err)
 
 			action := NewServiceAccountAction(test.NewLogger())
-			res, warning, err := action.Execute(&unstructured.Unstructured{Object: saUnstructured}, nil)
-			require.NoError(t, warning)
+			res, err := action.Execute(&velero.RestoreItemActionExecuteInput{
+				Item:           &unstructured.Unstructured{Object: saUnstructured},
+				ItemFromBackup: &unstructured.Unstructured{Object: saUnstructured},
+				Restore:        nil,
+			})
 			require.NoError(t, err)
 
 			var resSA *corev1.ServiceAccount
-			err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.UnstructuredContent(), &resSA)
+			err = runtime.DefaultUnstructuredConverter.FromUnstructured(res.UpdatedItem.UnstructuredContent(), &resSA)
 			require.NoError(t, err)
 
 			actual := []string{}

@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -31,6 +31,10 @@ import (
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	velerov1client "github.com/heptio/velero/pkg/generated/clientset/versioned/typed/velero/v1"
 )
+
+// ErrNotFound is exported for external packages to check for when a file is
+// not found
+var ErrNotFound = errors.New("file not found")
 
 func Stream(client velerov1client.DownloadRequestsGetter, namespace, name string, kind v1.DownloadTargetKind, w io.Writer, timeout time.Duration) error {
 	req := &v1.DownloadRequest{
@@ -97,7 +101,7 @@ Loop:
 	}
 
 	if req.Status.DownloadURL == "" {
-		return errors.New("file not found")
+		return ErrNotFound
 	}
 
 	httpClient := new(http.Client)
@@ -122,6 +126,10 @@ Loop:
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			return errors.Wrapf(err, "request failed: unable to decode response body")
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			return ErrNotFound
 		}
 
 		return errors.Errorf("request failed: %v", string(body))

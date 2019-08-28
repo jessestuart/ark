@@ -27,7 +27,7 @@ workflows:
 
 shared: &shared
   docker:
-    - image: docker:18-git
+    - image: docker:stable-git
   steps:
     - checkout
 
@@ -50,7 +50,6 @@ shared: &shared
           sh .circleci/build-image.sh
 
 jobs:
-  # TODO: Consolidate $TAG and $TARGET.
   build-amd64:
     <<: *shared
     environment:
@@ -71,7 +70,7 @@ jobs:
       GOARCH: arm
       QEMU_ARCH: arm
       TAG: arm
-      TARGET: arm32v6
+      TARGET: arm32v7
 
   push-manifest:
     docker:

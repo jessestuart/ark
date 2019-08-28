@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ import (
 	corev1api "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	velerotest "github.com/heptio/velero/pkg/test"
 )
 
 var mergedServiceAccountsBenchmarkResult *unstructured.Unstructured
@@ -313,6 +313,60 @@ func stripWhitespace(s string) string {
 		}
 		return r
 	}, s)
+}
+
+func TestMergeMaps(t *testing.T) {
+	var testCases = []struct {
+		name        string
+		source      map[string]string
+		destination map[string]string
+		expected    map[string]string
+	}{
+		{
+			name:        "nil destination should result in source being copied",
+			destination: nil,
+			source: map[string]string{
+				"k1": "v1",
+			},
+			expected: map[string]string{
+				"k1": "v1",
+			},
+		},
+		{
+			name: "keys missing from destination should be copied from source",
+			destination: map[string]string{
+				"k2": "v2",
+			},
+			source: map[string]string{
+				"k1": "v1",
+			},
+			expected: map[string]string{
+				"k1": "v1",
+				"k2": "v2",
+			},
+		},
+		{
+			name: "matching key should not have value copied from source",
+			destination: map[string]string{
+				"k1": "v1",
+			},
+			source: map[string]string{
+				"k1": "v2",
+			},
+			expected: map[string]string{
+				"k1": "v1",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+
+			result := mergeMaps(tc.destination, tc.source)
+
+			assert.Equal(t, tc.expected, result)
+		})
+	}
 }
 
 func TestGeneratePatch(t *testing.T) {

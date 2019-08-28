@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import (
 	"flag"
 
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/cmd/cli/backup"
@@ -31,14 +32,15 @@ import (
 	"github.com/heptio/velero/pkg/cmd/cli/delete"
 	"github.com/heptio/velero/pkg/cmd/cli/describe"
 	"github.com/heptio/velero/pkg/cmd/cli/get"
+	"github.com/heptio/velero/pkg/cmd/cli/install"
 	"github.com/heptio/velero/pkg/cmd/cli/plugin"
 	"github.com/heptio/velero/pkg/cmd/cli/restic"
 	"github.com/heptio/velero/pkg/cmd/cli/restore"
 	"github.com/heptio/velero/pkg/cmd/cli/schedule"
 	"github.com/heptio/velero/pkg/cmd/cli/snapshotlocation"
+	"github.com/heptio/velero/pkg/cmd/cli/version"
 	"github.com/heptio/velero/pkg/cmd/server"
 	runplugin "github.com/heptio/velero/pkg/cmd/server/plugin"
-	"github.com/heptio/velero/pkg/cmd/version"
 )
 
 func NewCommand(name string) *cobra.Command {
@@ -61,9 +63,10 @@ operations can also be performed as 'velero backup get' and 'velero schedule cre
 		backup.NewCommand(f),
 		schedule.NewCommand(f),
 		restore.NewCommand(f),
-		server.NewCommand(),
+		server.NewCommand(f),
 		version.NewCommand(f),
 		get.NewCommand(f),
+		install.NewCommand(f),
 		describe.NewCommand(f),
 		create.NewCommand(f),
 		runplugin.NewCommand(f),
@@ -77,13 +80,9 @@ operations can also be performed as 'velero backup get' and 'velero schedule cre
 		snapshotlocation.NewCommand(f),
 	)
 
-	// add the glog flags
+	// init and add the klog flags
+	klog.InitFlags(flag.CommandLine)
 	c.PersistentFlags().AddGoFlagSet(flag.CommandLine)
-
-	// TODO: switch to a different logging library.
-	// Work around https://github.com/golang/glog/pull/13.
-	// See also https://github.com/kubernetes/kubernetes/issues/17162
-	flag.CommandLine.Parse([]string{})
 
 	return c
 }

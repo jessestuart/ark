@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -28,167 +28,90 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
+	"github.com/heptio/velero/pkg/builder"
 	"github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
-	velerotest "github.com/heptio/velero/pkg/util/test"
+	velerotest "github.com/heptio/velero/pkg/test"
 )
 
-func TestPodHasSnapshotAnnotation(t *testing.T) {
+func TestGetVolumeBackupsForPod(t *testing.T) {
 	tests := []struct {
-		name        string
-		annotations map[string]string
-		expected    bool
+		name             string
+		podVolumeBackups []*velerov1api.PodVolumeBackup
+		podAnnotations   map[string]string
+		podName          string
+		expected         map[string]string
 	}{
 		{
-			name:        "nil annotations",
-			annotations: nil,
-			expected:    false,
+			name:           "nil annotations",
+			podAnnotations: nil,
+			expected:       nil,
 		},
 		{
-			name:        "empty annotations",
-			annotations: make(map[string]string),
-			expected:    false,
+			name:           "empty annotations",
+			podAnnotations: make(map[string]string),
+			expected:       nil,
 		},
 		{
-			name:        "non-empty map, no snapshot annotation",
-			annotations: map[string]string{"foo": "bar"},
-			expected:    false,
+			name:           "non-empty map, no snapshot annotation",
+			podAnnotations: map[string]string{"foo": "bar"},
+			expected:       nil,
 		},
 		{
-			name:        "has snapshot annotation only, no suffix",
-			annotations: map[string]string{podAnnotationPrefix: "bar"},
-			expected:    true,
+			name:           "has snapshot annotation only, no suffix",
+			podAnnotations: map[string]string{podAnnotationPrefix: "bar"},
+			expected:       map[string]string{"": "bar"},
 		},
 		{
-			name:        "has snapshot annotation only, with suffix",
-			annotations: map[string]string{podAnnotationPrefix + "foo": "bar"},
-			expected:    true,
+			name:           "has snapshot annotation only, with suffix",
+			podAnnotations: map[string]string{podAnnotationPrefix + "foo": "bar"},
+			expected:       map[string]string{"foo": "bar"},
 		},
 		{
-			name:        "has snapshot annotation, with suffix",
-			annotations: map[string]string{"foo": "bar", podAnnotationPrefix + "foo": "bar"},
-			expected:    true,
+			name:           "has snapshot annotation, with suffix",
+			podAnnotations: map[string]string{"x": "y", podAnnotationPrefix + "foo": "bar", podAnnotationPrefix + "abc": "123"},
+			expected:       map[string]string{"foo": "bar", "abc": "123"},
 		},
 		{
-			name:        "has legacy snapshot annotation only, with suffix",
-			annotations: map[string]string{podAnnotationLegacyPrefix + "foo": "bar"},
-			expected:    true,
-		},
-		{
-			name:        "has legacy and current snapshot annotations, with suffixes",
-			annotations: map[string]string{podAnnotationPrefix + "curr": "baz", podAnnotationLegacyPrefix + "foo": "bar"},
-			expected:    true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			pod := &corev1api.Pod{}
-			pod.Annotations = test.annotations
-			assert.Equal(t, test.expected, PodHasSnapshotAnnotation(pod))
-		})
-	}
-}
-
-func TestGetPodSnapshotAnnotations(t *testing.T) {
-	tests := []struct {
-		name        string
-		annotations map[string]string
-		expected    map[string]string
-	}{
-		{
-			name:        "nil annotations",
-			annotations: nil,
-			expected:    nil,
-		},
-		{
-			name:        "empty annotations",
-			annotations: make(map[string]string),
-			expected:    nil,
-		},
-		{
-			name:        "non-empty map, no snapshot annotation",
-			annotations: map[string]string{"foo": "bar"},
-			expected:    nil,
-		},
-		{
-			name:        "has snapshot annotation only, no suffix",
-			annotations: map[string]string{podAnnotationPrefix: "bar"},
-			expected:    map[string]string{"": "bar"},
-		},
-		{
-			name:        "has snapshot annotation only, with suffix",
-			annotations: map[string]string{podAnnotationPrefix + "foo": "bar"},
-			expected:    map[string]string{"foo": "bar"},
-		},
-		{
-			name:        "has snapshot annotation, with suffix",
-			annotations: map[string]string{"x": "y", podAnnotationPrefix + "foo": "bar", podAnnotationPrefix + "abc": "123"},
-			expected:    map[string]string{"foo": "bar", "abc": "123"},
-		},
-		{
-			name:        "has legacy snapshot annotation only",
-			annotations: map[string]string{podAnnotationLegacyPrefix + "foo": "bar"},
-			expected:    map[string]string{"foo": "bar"},
-		},
-		{
-			name: "when current and legacy snapshot annotations exist, current wins",
-			annotations: map[string]string{
-				podAnnotationPrefix + "foo":       "current",
-				podAnnotationLegacyPrefix + "foo": "legacy",
-				podAnnotationLegacyPrefix + "bar": "baz",
+			name: "has snapshot annotation, with suffix, and also PVBs",
+			podVolumeBackups: []*velerov1api.PodVolumeBackup{
+				builder.ForPodVolumeBackup("velero", "pvb-1").PodName("TestPod").SnapshotID("bar").Volume("pvbtest1-foo").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-2").PodName("TestPod").SnapshotID("123").Volume("pvbtest2-abc").Result(),
 			},
-			expected: map[string]string{"foo": "current", "bar": "baz"},
+			podName:        "TestPod",
+			podAnnotations: map[string]string{"x": "y", podAnnotationPrefix + "foo": "bar", podAnnotationPrefix + "abc": "123"},
+			expected:       map[string]string{"pvbtest1-foo": "bar", "pvbtest2-abc": "123"},
+		},
+		{
+			name: "no snapshot annotation, no suffix, but with PVBs",
+			podVolumeBackups: []*velerov1api.PodVolumeBackup{
+				builder.ForPodVolumeBackup("velero", "pvb-1").PodName("TestPod").SnapshotID("bar").Volume("pvbtest1-foo").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-2").PodName("TestPod").SnapshotID("123").Volume("pvbtest2-abc").Result(),
+			},
+			podName:  "TestPod",
+			expected: map[string]string{"pvbtest1-foo": "bar", "pvbtest2-abc": "123"},
+		},
+		{
+			name: "has snapshot annotation, with suffix, and with PVBs from current pod and a PVB from another pod",
+			podVolumeBackups: []*velerov1api.PodVolumeBackup{
+				builder.ForPodVolumeBackup("velero", "pvb-1").PodName("TestPod").SnapshotID("bar").Volume("pvbtest1-foo").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-2").PodName("TestPod").SnapshotID("123").Volume("pvbtest2-abc").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-3").PodName("TestAnotherPod").SnapshotID("xyz").Volume("pvbtest3-xyz").Result(),
+			},
+			podAnnotations: map[string]string{"x": "y", podAnnotationPrefix + "foo": "bar", podAnnotationPrefix + "abc": "123"},
+			podName:        "TestPod",
+			expected:       map[string]string{"pvbtest1-foo": "bar", "pvbtest2-abc": "123"},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			pod := &corev1api.Pod{}
-			pod.Annotations = test.annotations
-			assert.Equal(t, test.expected, GetPodSnapshotAnnotations(pod))
-		})
-	}
-}
+			pod.Annotations = test.podAnnotations
+			pod.Name = test.podName
 
-func TestSetPodSnapshotAnnotation(t *testing.T) {
-	tests := []struct {
-		name        string
-		annotations map[string]string
-		volumeName  string
-		snapshotID  string
-		expected    map[string]string
-	}{
-		{
-			name:        "set snapshot annotation on pod with no annotations",
-			annotations: nil,
-			volumeName:  "foo",
-			snapshotID:  "bar",
-			expected:    map[string]string{podAnnotationPrefix + "foo": "bar"},
-		},
-		{
-			name:        "set snapshot annotation on pod with existing annotations",
-			annotations: map[string]string{"existing": "annotation"},
-			volumeName:  "foo",
-			snapshotID:  "bar",
-			expected:    map[string]string{"existing": "annotation", podAnnotationPrefix + "foo": "bar"},
-		},
-		{
-			name:        "snapshot annotation is overwritten if already exists",
-			annotations: map[string]string{podAnnotationPrefix + "foo": "existing"},
-			volumeName:  "foo",
-			snapshotID:  "bar",
-			expected:    map[string]string{podAnnotationPrefix + "foo": "bar"},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			pod := &corev1api.Pod{}
-			pod.Annotations = test.annotations
-
-			SetPodSnapshotAnnotation(pod, test.volumeName, test.snapshotID)
-			assert.Equal(t, test.expected, pod.Annotations)
+			res := GetVolumeBackupsForPod(test.podVolumeBackups, pod)
+			assert.Equal(t, test.expected, res)
 		})
 	}
 }
@@ -219,16 +142,6 @@ func TestGetVolumesToBackup(t *testing.T) {
 			annotations: map[string]string{"foo": "bar", volumesToBackupAnnotation: "volume-1,volume-2,volume-3"},
 			expected:    []string{"volume-1", "volume-2", "volume-3"},
 		},
-		{
-			name:        "legacy annotation",
-			annotations: map[string]string{"foo": "bar", volumesToBackupLegacyAnnotation: "volume-1"},
-			expected:    []string{"volume-1"},
-		},
-		{
-			name:        "when legacy and current annotations are both specified, current wins",
-			annotations: map[string]string{volumesToBackupAnnotation: "current", volumesToBackupLegacyAnnotation: "legacy"},
-			expected:    []string{"current"},
-		},
 	}
 
 	for _, test := range tests {
@@ -249,9 +162,10 @@ func TestGetVolumesToBackup(t *testing.T) {
 
 func TestGetSnapshotsInBackup(t *testing.T) {
 	tests := []struct {
-		name             string
-		podVolumeBackups []velerov1api.PodVolumeBackup
-		expected         []SnapshotIdentifier
+		name                  string
+		podVolumeBackups      []velerov1api.PodVolumeBackup
+		expected              []SnapshotIdentifier
+		longBackupNameEnabled bool
 	}{
 		{
 			name:             "no pod volume backups",
@@ -328,6 +242,53 @@ func TestGetSnapshotsInBackup(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:                  "some pod volume backups with matching label and backup name greater than 63 chars",
+			longBackupNameEnabled: true,
+			podVolumeBackups: []velerov1api.PodVolumeBackup{
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "foo", Labels: map[string]string{velerov1api.BackupNameLabel: "non-matching-backup-1"}},
+					Spec: velerov1api.PodVolumeBackupSpec{
+						Pod: corev1api.ObjectReference{Name: "pod-1", Namespace: "ns-1"},
+					},
+					Status: velerov1api.PodVolumeBackupStatus{SnapshotID: "snap-1"},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "bar", Labels: map[string]string{velerov1api.BackupNameLabel: "non-matching-backup-2"}},
+					Spec: velerov1api.PodVolumeBackupSpec{
+						Pod: corev1api.ObjectReference{Name: "pod-2", Namespace: "ns-2"},
+					},
+					Status: velerov1api.PodVolumeBackupStatus{SnapshotID: "snap-2"},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "completed-pvb", Labels: map[string]string{velerov1api.BackupNameLabel: "the-really-long-backup-name-that-is-much-more-than-63-cha6ca4bc"}},
+					Spec: velerov1api.PodVolumeBackupSpec{
+						Pod: corev1api.ObjectReference{Name: "pod-1", Namespace: "ns-1"},
+					},
+					Status: velerov1api.PodVolumeBackupStatus{SnapshotID: "snap-3"},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "completed-pvb-2", Labels: map[string]string{velerov1api.BackupNameLabel: "backup-1"}},
+					Spec: velerov1api.PodVolumeBackupSpec{
+						Pod: corev1api.ObjectReference{Name: "pod-1", Namespace: "ns-1"},
+					},
+					Status: velerov1api.PodVolumeBackupStatus{SnapshotID: "snap-4"},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{Name: "incomplete-or-failed-pvb", Labels: map[string]string{velerov1api.BackupNameLabel: "backup-1"}},
+					Spec: velerov1api.PodVolumeBackupSpec{
+						Pod: corev1api.ObjectReference{Name: "pod-1", Namespace: "ns-2"},
+					},
+					Status: velerov1api.PodVolumeBackupStatus{SnapshotID: ""},
+				},
+			},
+			expected: []SnapshotIdentifier{
+				{
+					VolumeNamespace: "ns-1",
+					SnapshotID:      "snap-3",
+				},
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -340,6 +301,10 @@ func TestGetSnapshotsInBackup(t *testing.T) {
 			)
 
 			veleroBackup.Name = "backup-1"
+
+			if test.longBackupNameEnabled {
+				veleroBackup.Name = "the-really-long-backup-name-that-is-much-more-than-63-characters"
+			}
 
 			for _, pvb := range test.podVolumeBackups {
 				require.NoError(t, pvbInformer.Informer().GetStore().Add(pvb.DeepCopy()))

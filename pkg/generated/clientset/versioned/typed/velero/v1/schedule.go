@@ -1,5 +1,5 @@
 /*
-Copyright the Heptio Ark contributors.
+Copyright the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,9 +19,11 @@ limitations under the License.
 package v1
 
 import (
+	"time"
+
 	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
 	scheme "github.com/heptio/velero/pkg/generated/clientset/versioned/scheme"
-	meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
 	watch "k8s.io/apimachinery/pkg/watch"
 	rest "k8s.io/client-go/rest"
@@ -38,11 +40,11 @@ type ScheduleInterface interface {
 	Create(*v1.Schedule) (*v1.Schedule, error)
 	Update(*v1.Schedule) (*v1.Schedule, error)
 	UpdateStatus(*v1.Schedule) (*v1.Schedule, error)
-	Delete(name string, options *meta_v1.DeleteOptions) error
-	DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error
-	Get(name string, options meta_v1.GetOptions) (*v1.Schedule, error)
-	List(opts meta_v1.ListOptions) (*v1.ScheduleList, error)
-	Watch(opts meta_v1.ListOptions) (watch.Interface, error)
+	Delete(name string, options *metav1.DeleteOptions) error
+	DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error
+	Get(name string, options metav1.GetOptions) (*v1.Schedule, error)
+	List(opts metav1.ListOptions) (*v1.ScheduleList, error)
+	Watch(opts metav1.ListOptions) (watch.Interface, error)
 	Patch(name string, pt types.PatchType, data []byte, subresources ...string) (result *v1.Schedule, err error)
 	ScheduleExpansion
 }
@@ -62,7 +64,7 @@ func newSchedules(c *VeleroV1Client, namespace string) *schedules {
 }
 
 // Get takes name of the schedule, and returns the corresponding schedule object, and an error if there is any.
-func (c *schedules) Get(name string, options meta_v1.GetOptions) (result *v1.Schedule, err error) {
+func (c *schedules) Get(name string, options metav1.GetOptions) (result *v1.Schedule, err error) {
 	result = &v1.Schedule{}
 	err = c.client.Get().
 		Namespace(c.ns).
@@ -75,24 +77,34 @@ func (c *schedules) Get(name string, options meta_v1.GetOptions) (result *v1.Sch
 }
 
 // List takes label and field selectors, and returns the list of Schedules that match those selectors.
-func (c *schedules) List(opts meta_v1.ListOptions) (result *v1.ScheduleList, err error) {
+func (c *schedules) List(opts metav1.ListOptions) (result *v1.ScheduleList, err error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	result = &v1.ScheduleList{}
 	err = c.client.Get().
 		Namespace(c.ns).
 		Resource("schedules").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Do().
 		Into(result)
 	return
 }
 
 // Watch returns a watch.Interface that watches the requested schedules.
-func (c *schedules) Watch(opts meta_v1.ListOptions) (watch.Interface, error) {
+func (c *schedules) Watch(opts metav1.ListOptions) (watch.Interface, error) {
+	var timeout time.Duration
+	if opts.TimeoutSeconds != nil {
+		timeout = time.Duration(*opts.TimeoutSeconds) * time.Second
+	}
 	opts.Watch = true
 	return c.client.Get().
 		Namespace(c.ns).
 		Resource("schedules").
 		VersionedParams(&opts, scheme.ParameterCodec).
+		Timeout(timeout).
 		Watch()
 }
 
@@ -138,7 +150,7 @@ func (c *schedules) UpdateStatus(schedule *v1.Schedule) (result *v1.Schedule, er
 }
 
 // Delete takes name of the schedule and deletes it. Returns an error if one occurs.
-func (c *schedules) Delete(name string, options *meta_v1.DeleteOptions) error {
+func (c *schedules) Delete(name string, options *metav1.DeleteOptions) error {
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("schedules").
@@ -149,11 +161,16 @@ func (c *schedules) Delete(name string, options *meta_v1.DeleteOptions) error {
 }
 
 // DeleteCollection deletes a collection of objects.
-func (c *schedules) DeleteCollection(options *meta_v1.DeleteOptions, listOptions meta_v1.ListOptions) error {
+func (c *schedules) DeleteCollection(options *metav1.DeleteOptions, listOptions metav1.ListOptions) error {
+	var timeout time.Duration
+	if listOptions.TimeoutSeconds != nil {
+		timeout = time.Duration(*listOptions.TimeoutSeconds) * time.Second
+	}
 	return c.client.Delete().
 		Namespace(c.ns).
 		Resource("schedules").
 		VersionedParams(&listOptions, scheme.ParameterCodec).
+		Timeout(timeout).
 		Body(options).
 		Do().
 		Error()

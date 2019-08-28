@@ -5,16 +5,15 @@ ARG target
 FROM golang:1.12 as builder
 
 ARG goarch
+ENV GOOS linux
 ENV GOARCH $goarch
-ENV GOROOT /usr/local/go
-ENV GOPATH /go
 ENV CGO_ENABLED 0
-ENV PATH "$GOROOT/bin:$GOPATH/bin:$GOPATH/linux_$GOARCH/bin:$PATH"
 
-ARG image
+ENV image heptio/velero
 WORKDIR /go/src/github.com/${image}
-RUN git clone https://github.com/${image} .
-RUN go build cmd/velero/main.go && mv ./main /velero
+RUN \
+  git clone --depth=1 https://github.com/${image} . && \
+  go build -o /velero cmd/velero/main.go
 
 # ==================
 # Final stage.
@@ -29,10 +28,10 @@ COPY --from=builder /velero /velero
 ARG goarch
 ADD https://github.com/restic/restic/releases/download/v0.9.5/restic_0.9.5_linux_${goarch}.bz2 /restic.bz2
 RUN apk add --no-cache --update ca-certificates && \
-    bunzip2 restic.bz2 && \
-    chmod +x /restic && \
-    mv /restic /usr/bin/restic
+  bunzip2 restic.bz2 && \
+  chmod +x /restic && \
+  mv /restic /usr/bin/restic
 
-USER nobody
+USER nobody:nobody
 
 ENTRYPOINT ["/velero"]

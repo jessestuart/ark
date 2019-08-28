@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -23,8 +23,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/endpoints"
-	"github.com/aws/aws-sdk-go/aws/signer/v4"
+	"github.com/aws/aws-sdk-go/aws/request"
+	v4 "github.com/aws/aws-sdk-go/aws/signer/v4"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/pkg/errors"
@@ -34,25 +36,34 @@ import (
 )
 
 const (
-	s3URLKey            = "s3Url"
-	publicURLKey        = "publicUrl"
-	kmsKeyIDKey         = "kmsKeyId"
-	s3ForcePathStyleKey = "s3ForcePathStyle"
-	bucketKey           = "bucket"
-	signatureVersionKey = "signatureVersion"
+	s3URLKey             = "s3Url"
+	publicURLKey         = "publicUrl"
+	kmsKeyIDKey          = "kmsKeyId"
+	s3ForcePathStyleKey  = "s3ForcePathStyle"
+	bucketKey            = "bucket"
+	signatureVersionKey  = "signatureVersion"
+	credentialProfileKey = "profile"
 )
 
-type objectStore struct {
+type s3Interface interface {
+	HeadObject(input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error)
+	GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
+	ListObjectsV2Pages(input *s3.ListObjectsV2Input, fn func(*s3.ListObjectsV2Output, bool) bool) error
+	DeleteObject(input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error)
+	GetObjectRequest(input *s3.GetObjectInput) (req *request.Request, output *s3.GetObjectOutput)
+}
+
+type ObjectStore struct {
 	log              logrus.FieldLogger
-	s3               *s3.S3
-	preSignS3        *s3.S3
+	s3               s3Interface
+	preSignS3        s3Interface
 	s3Uploader       *s3manager.Uploader
 	kmsKeyID         string
 	signatureVersion string
 }
 
-func NewObjectStore(logger logrus.FieldLogger) cloudprovider.ObjectStore {
-	return &objectStore{log: logger}
+func NewObjectStore(logger logrus.FieldLogger) *ObjectStore {
+	return &ObjectStore{log: logger}
 }
 
 func isValidSignatureVersion(signatureVersion string) bool {
@@ -63,7 +74,19 @@ func isValidSignatureVersion(signatureVersion string) bool {
 	return false
 }
 
-func (o *objectStore) Init(config map[string]string) error {
+func (o *ObjectStore) Init(config map[string]string) error {
+	if err := cloudprovider.ValidateObjectStoreConfigKeys(config,
+		regionKey,
+		s3URLKey,
+		publicURLKey,
+		kmsKeyIDKey,
+		s3ForcePathStyleKey,
+		signatureVersionKey,
+		credentialProfileKey,
+	); err != nil {
+		return err
+	}
+
 	var (
 		region              = config[regionKey]
 		s3URL               = config[s3URLKey]
@@ -71,6 +94,7 @@ func (o *objectStore) Init(config map[string]string) error {
 		kmsKeyID            = config[kmsKeyIDKey]
 		s3ForcePathStyleVal = config[s3ForcePathStyleKey]
 		signatureVersion    = config[signatureVersionKey]
+		credentialProfile   = config[credentialProfileKey]
 
 		// note that bucket is automatically added to the config map
 		// by the server from the ObjectStorageProviderConfig so
@@ -103,7 +127,7 @@ func (o *objectStore) Init(config map[string]string) error {
 		return err
 	}
 
-	serverSession, err := getSession(serverConfig)
+	serverSession, err := getSession(serverConfig, credentialProfile)
 	if err != nil {
 		return err
 	}
@@ -124,7 +148,7 @@ func (o *objectStore) Init(config map[string]string) error {
 		if err != nil {
 			return err
 		}
-		publicSession, err := getSession(publicConfig)
+		publicSession, err := getSession(publicConfig, credentialProfile)
 		if err != nil {
 			return err
 		}
@@ -143,7 +167,7 @@ func newAWSConfig(url, region string, forcePathStyle bool) (*aws.Config, error) 
 
 	if url != "" {
 		if !IsValidS3URLScheme(url) {
-			return nil, errors.Errorf("Invalid s3 url: %s", url)
+			return nil, errors.Errorf("Invalid s3 url %s, URL must be valid according to https://golang.org/pkg/net/url/#Parse and start with http:// or https://", url)
 		}
 
 		awsConfig = awsConfig.WithEndpointResolver(
@@ -162,7 +186,7 @@ func newAWSConfig(url, region string, forcePathStyle bool) (*aws.Config, error) 
 	return awsConfig, nil
 }
 
-func (o *objectStore) PutObject(bucket, key string, body io.Reader) error {
+func (o *ObjectStore) PutObject(bucket, key string, body io.Reader) error {
 	req := &s3manager.UploadInput{
 		Bucket: &bucket,
 		Key:    &key,
@@ -180,7 +204,49 @@ func (o *objectStore) PutObject(bucket, key string, body io.Reader) error {
 	return errors.Wrapf(err, "error putting object %s", key)
 }
 
-func (o *objectStore) GetObject(bucket, key string) (io.ReadCloser, error) {
+const notFoundCode = "NotFound"
+
+// ObjectExists checks if there is an object with the given key in the object storage bucket.
+func (o *ObjectStore) ObjectExists(bucket, key string) (bool, error) {
+	log := o.log.WithFields(
+		logrus.Fields{
+			"bucket": bucket,
+			"key":    key,
+		},
+	)
+
+	req := &s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+
+	log.Debug("Checking if object exists")
+	if _, err := o.s3.HeadObject(req); err != nil {
+		log.Debug("Checking for AWS specific error information")
+		if aerr, ok := err.(awserr.Error); ok {
+			log.WithFields(
+				logrus.Fields{
+					"code":    aerr.Code(),
+					"message": aerr.Message(),
+				},
+			).Debugf("awserr.Error contents (origErr=%v)", aerr.OrigErr())
+
+			// The code will be NotFound if the key doesn't exist.
+			// See https://github.com/aws/aws-sdk-go/issues/1208 and https://github.com/aws/aws-sdk-go/pull/1213.
+			log.Debugf("Checking for code=%s", notFoundCode)
+			if aerr.Code() == notFoundCode {
+				log.Debug("Object doesn't exist - got not found")
+				return false, nil
+			}
+		}
+		return false, errors.WithStack(err)
+	}
+
+	log.Debug("Object exists")
+	return true, nil
+}
+
+func (o *ObjectStore) GetObject(bucket, key string) (io.ReadCloser, error) {
 	req := &s3.GetObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
@@ -194,7 +260,7 @@ func (o *objectStore) GetObject(bucket, key string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-func (o *objectStore) ListCommonPrefixes(bucket, prefix, delimiter string) ([]string, error) {
+func (o *ObjectStore) ListCommonPrefixes(bucket, prefix, delimiter string) ([]string, error) {
 	req := &s3.ListObjectsV2Input{
 		Bucket:    &bucket,
 		Prefix:    &prefix,
@@ -215,7 +281,7 @@ func (o *objectStore) ListCommonPrefixes(bucket, prefix, delimiter string) ([]st
 	return ret, nil
 }
 
-func (o *objectStore) ListObjects(bucket, prefix string) ([]string, error) {
+func (o *ObjectStore) ListObjects(bucket, prefix string) ([]string, error) {
 	req := &s3.ListObjectsV2Input{
 		Bucket: &bucket,
 		Prefix: &prefix,
@@ -241,7 +307,7 @@ func (o *objectStore) ListObjects(bucket, prefix string) ([]string, error) {
 	return ret, nil
 }
 
-func (o *objectStore) DeleteObject(bucket, key string) error {
+func (o *ObjectStore) DeleteObject(bucket, key string) error {
 	req := &s3.DeleteObjectInput{
 		Bucket: &bucket,
 		Key:    &key,
@@ -252,7 +318,7 @@ func (o *objectStore) DeleteObject(bucket, key string) error {
 	return errors.Wrapf(err, "error deleting object %s", key)
 }
 
-func (o *objectStore) CreateSignedURL(bucket, key string, ttl time.Duration) (string, error) {
+func (o *ObjectStore) CreateSignedURL(bucket, key string, ttl time.Duration) (string, error) {
 	req, _ := o.preSignS3.GetObjectRequest(&s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),

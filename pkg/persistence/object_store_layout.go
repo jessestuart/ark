@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -75,11 +75,6 @@ func (l *ObjectStoreLayout) getBackupMetadataKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, "velero-backup.json")
 }
 
-// TODO(1.0): remove
-func (l *ObjectStoreLayout) getLegacyBackupMetadataKey(backup string) string {
-	return path.Join(l.subdirs["backups"], backup, "ark-backup.json")
-}
-
 func (l *ObjectStoreLayout) getBackupContentsKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s.tar.gz", backup))
 }
@@ -88,8 +83,16 @@ func (l *ObjectStoreLayout) getBackupLogKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-logs.gz", backup))
 }
 
+func (l *ObjectStoreLayout) getPodVolumeBackupsKey(backup string) string {
+	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-podvolumebackups.json.gz", backup))
+}
+
 func (l *ObjectStoreLayout) getBackupVolumeSnapshotsKey(backup string) string {
 	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-volumesnapshots.json.gz", backup))
+}
+
+func (l *ObjectStoreLayout) getBackupResourceListKey(backup string) string {
+	return path.Join(l.subdirs["backups"], backup, fmt.Sprintf("%s-resource-list.json.gz", backup))
 }
 
 func (l *ObjectStoreLayout) getRestoreLogKey(restore string) string {

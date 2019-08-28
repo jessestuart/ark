@@ -1,5 +1,5 @@
 /*
-Copyright 2018 the Heptio Ark contributors.
+Copyright 2018, 2019 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,8 +40,15 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 
 	}
 
+	userID := int64(0)
+	mountPropagationMode := corev1.MountPropagationHostToContainer
+
 	daemonSet := &appsv1.DaemonSet{
 		ObjectMeta: objectMeta(namespace, "restic"),
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "DaemonSet",
+			APIVersion: appsv1.SchemeGroupVersion.String(),
+		},
 		Spec: appsv1.DaemonSetSpec{
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
@@ -51,11 +58,16 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"name": "restic",
+						"name":      "restic",
+						"component": "velero",
 					},
+					Annotations: c.annotations,
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "velero",
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsUser: &userID,
+					},
 					Volumes: []corev1.Volume{
 						{
 							Name: "host-pods",
@@ -65,16 +77,35 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 								},
 							},
 						},
+						{
+							Name: "scratch",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: new(corev1.EmptyDirVolumeSource),
+							},
+						},
 					},
 					Containers: []corev1.Container{
 						{
 							Name:            "restic",
 							Image:           c.image,
 							ImagePullPolicy: pullPolicy,
+							Command: []string{
+								"/velero",
+							},
+							Args: []string{
+								"restic",
+								"server",
+							},
+
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "host-pods",
-									MountPath: "/host_pods",
+									Name:             "host-pods",
+									MountPath:        "/host_pods",
+									MountPropagation: &mountPropagationMode,
+								},
+								{
+									Name:      "scratch",
+									MountPath: "/scratch",
 								},
 							},
 							Env: []corev1.EnvVar{
@@ -95,14 +126,11 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 									},
 								},
 								{
-									Name:  "GOOGLE_APPLICATION_CREDENTIALS",
-									Value: "/credentials/cloud",
-								},
-								{
-									Name:  "AWS_SHARED_CREDENTIALS_FILE",
-									Value: "/credentials/cloud",
+									Name:  "VELERO_SCRATCH_DIR",
+									Value: "/scratch",
 								},
 							},
+							Resources: c.resources,
 						},
 					},
 				},
@@ -110,7 +138,7 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 		},
 	}
 
-	if !c.withoutCredentialsVolume {
+	if c.withSecret {
 		daemonSet.Spec.Template.Spec.Volumes = append(
 			daemonSet.Spec.Template.Spec.Volumes,
 			corev1.Volume{
@@ -122,6 +150,29 @@ func DaemonSet(namespace string, opts ...podTemplateOption) *appsv1.DaemonSet {
 				},
 			},
 		)
+
+		daemonSet.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			daemonSet.Spec.Template.Spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{
+				Name:      "cloud-credentials",
+				MountPath: "/credentials",
+			},
+		)
+
+		daemonSet.Spec.Template.Spec.Containers[0].Env = append(daemonSet.Spec.Template.Spec.Containers[0].Env, []corev1.EnvVar{
+			{
+				Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+				Value: "/credentials/cloud",
+			},
+			{
+				Name:  "AWS_SHARED_CREDENTIALS_FILE",
+				Value: "/credentials/cloud",
+			},
+			{
+				Name:  "AZURE_CREDENTIALS_FILE",
+				Value: "/credentials/cloud",
+			},
+		}...)
 	}
 
 	daemonSet.Spec.Template.Spec.Containers[0].Env = append(daemonSet.Spec.Template.Spec.Containers[0].Env, c.envVars...)

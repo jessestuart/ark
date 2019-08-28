@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Heptio Ark contributors.
+Copyright 2017 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import (
 	"github.com/heptio/velero/pkg/client"
 	"github.com/heptio/velero/pkg/cmd/cli/backup"
 	"github.com/heptio/velero/pkg/cmd/cli/backuplocation"
+	"github.com/heptio/velero/pkg/cmd/cli/plugin"
 	"github.com/heptio/velero/pkg/cmd/cli/restore"
 	"github.com/heptio/velero/pkg/cmd/cli/schedule"
 	"github.com/heptio/velero/pkg/cmd/cli/snapshotlocation"
@@ -49,12 +50,16 @@ func NewCommand(f client.Factory) *cobra.Command {
 	snapshotLocationCommand := snapshotlocation.NewGetCommand(f, "snapshot-locations")
 	snapshotLocationCommand.Aliases = []string{"snapshot-location"}
 
+	pluginCommand := plugin.NewGetCommand(f, "plugins")
+	pluginCommand.Aliases = []string{"plugin"}
+
 	c.AddCommand(
 		backupCommand,
 		scheduleCommand,
 		restoreCommand,
 		backupLocationCommand,
 		snapshotLocationCommand,
+		pluginCommand,
 	)
 
 	return c
