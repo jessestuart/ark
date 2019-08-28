@@ -32,9 +32,9 @@ RUN \
 # ==================
 FROM $target/ubuntu:disco
 
-RUN mkdir /restores && chmod 0755 /restores
-
 COPY qemu-* /usr/bin/
+
+RUN mkdir /restores && chmod 0755 /restores
 
 LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
 
