@@ -12,12 +12,51 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:bionic
+ARG target
+FROM golang:1.12 as builder
 
-LABEL maintainer="Steve Kriss <krisss@vmware.com>"
+ARG goarch
+ENV GOOS linux
+ENV GOARCH $goarch
+ENV CGO_ENABLED 0
 
-ADD /bin/linux/amd64/velero-restic-restore-helper .
+ENV image heptio/velero
+WORKDIR /go/src/github.com/${image}
 
-USER nobody:nobody
+RUN \
+  git clone --depth=1 https://github.com/${image} . && \
+  go build -o /bin/velero-restic-restore-helper cmd/velero-restic-restore-helper/main.go
 
-ENTRYPOINT [ "/velero-restic-restore-helper" ]
+# # ==================
+# # Final stage.
+# # ==================
+# FROM $target/alpine
+
+# LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
+
+# COPY qemu-* /usr/bin/
+# COPY --from=builder /velero /velero
+
+# ARG goarch
+# ADD https://github.com/restic/restic/releases/download/v0.9.5/restic_0.9.5_linux_${goarch}.bz2 /restic.bz2
+# RUN apk add --no-cache --update ca-certificates && \
+#   bunzip2 restic.bz2 && \
+#   chmod +x /restic && \
+#   mv /restic /usr/bin/restic
+
+# USER nobody:nobody
+
+# ENTRYPOINT ["/velero"]
+
+# ARG target
+FROM $target/ubuntu:disco
+
+COPY qemu-* /usr/bin/
+
+LABEL maintainer="Jesse Stuart <hi@jessestuart.com>"
+
+COPY --from=builder /bin/velero-restic-restore-helper /bin/velero-restic-restore-helper
+
+USER nobody
+
+ENTRYPOINT [ "/bin/velero-restic-restore-helper" ]

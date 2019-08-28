@@ -37,8 +37,8 @@ TAG_LATEST ?= false
 ### These variables should not need tweaking.
 ###
 
-CLI_PLATFORMS := linux-amd64 linux-arm linux-arm64 darwin-amd64 windows-amd64
-CONTAINER_PLATFORMS := linux-amd64 linux-arm linux-arm64
+CLI_PLATFORMS := linux-amd64 linux-arm linux-arm64 darwin-amd64 windows-amd64 linux-ppc64le
+CONTAINER_PLATFORMS := linux-amd64 linux-arm linux-arm64 linux-ppc64le
 
 platform_temp = $(subst -, ,$(ARCH))
 GOOS = $(word 1, $(platform_temp))
@@ -55,6 +55,9 @@ endif
 #ifeq ($(GOARCH),arm64)
 #		DOCKERFILE ?= Dockerfile.arm64 #aarch64/busybox
 #endif
+ifeq ($(GOARCH),ppc64le)
+                DOCKERFILE ?= Dockerfile-$(BIN)-ppc64le
+endif
 
 IMAGE = $(REGISTRY)/$(BIN)
 
@@ -214,3 +217,37 @@ changelog:
 
 release:
 	hack/goreleaser.sh
+
+serve-docs:
+	docker run \
+	--rm \
+	-v "$$(pwd)/site:/srv/jekyll" \
+	-it -p 4000:4000 \
+	jekyll/jekyll \
+	jekyll serve --livereload --incremental
+
+# gen-docs generates a new versioned docs directory under site/docs. It follows
+# the following process:
+#   1. Copies the contents of the most recently tagged docs directory into the new
+#      directory, to establish a useful baseline to diff against.
+#   2. Adds all copied content from step 1 to git's staging area via 'git add'.
+#   3. Replaces the contents of the new docs directory with the contents of the
+#      'master' docs directory, updating any version-specific links (e.g. to a
+#      specific branch of the GitHub repository) to use the new version
+#   4. Copies the previous version's ToC file and runs 'git add' to establish
+#      a useful baseline to diff against.
+#   5. Replaces the content of the new ToC file with the master ToC.
+#   6. Update site/_config.yml and site/_data/toc-mapping.yml to include entries
+#      for the new version.
+#
+# The unstaged changes in the working directory can now easily be diff'ed against the
+# staged changes using 'git diff' to review all docs changes made since the previous 
+# tagged version. Once the unstaged changes are ready, they can be added to the
+# staging area using 'git add' and then committed.
+#
+# To run gen-docs: "NEW_DOCS_VERSION=v1.1.0 make gen-docs"
+#
+# **NOTE**: there are additional manual steps required to finalize the process of generating
+# a new versioned docs site. The full process is documented in site/README-JEKYLL.md.
+gen-docs:
+	@hack/gen-docs.sh
