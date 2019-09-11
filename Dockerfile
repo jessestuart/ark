@@ -2,7 +2,7 @@
 # Build stage.
 # ==================
 ARG target
-FROM golang:1.12 as builder
+FROM golang:1.13 as builder
 
 ARG goarch
 ENV GOOS linux
