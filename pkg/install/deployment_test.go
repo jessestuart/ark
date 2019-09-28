@@ -18,6 +18,7 @@ package install
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
@@ -32,7 +33,7 @@ func TestDeployment(t *testing.T) {
 	assert.Equal(t, "--restore-only", deploy.Spec.Template.Spec.Containers[0].Args[1])
 
 	deploy = Deployment("velero", WithEnvFromSecretKey("my-var", "my-secret", "my-key"))
-	envSecret := deploy.Spec.Template.Spec.Containers[0].Env[2]
+	envSecret := deploy.Spec.Template.Spec.Containers[0].Env[3]
 	assert.Equal(t, "my-var", envSecret.Name)
 	assert.Equal(t, "my-secret", envSecret.ValueFrom.SecretKeyRef.LocalObjectReference.Name)
 	assert.Equal(t, "my-key", envSecret.ValueFrom.SecretKeyRef.Key)
@@ -42,6 +43,10 @@ func TestDeployment(t *testing.T) {
 	assert.Equal(t, corev1.PullIfNotPresent, deploy.Spec.Template.Spec.Containers[0].ImagePullPolicy)
 
 	deploy = Deployment("velero", WithSecret(true))
-	assert.Equal(t, 5, len(deploy.Spec.Template.Spec.Containers[0].Env))
+	assert.Equal(t, 6, len(deploy.Spec.Template.Spec.Containers[0].Env))
 	assert.Equal(t, 3, len(deploy.Spec.Template.Spec.Volumes))
+
+	deploy = Deployment("velero", WithDefaultResticMaintenanceFrequency(24*time.Hour))
+	assert.Len(t, deploy.Spec.Template.Spec.Containers[0].Args, 2)
+	assert.Equal(t, "--default-restic-prune-frequency=24h0m0s", deploy.Spec.Template.Spec.Containers[0].Args[1])
 }

@@ -52,6 +52,7 @@ import (
 	"github.com/heptio/velero/pkg/cmd/util/signals"
 	"github.com/heptio/velero/pkg/controller"
 	velerodiscovery "github.com/heptio/velero/pkg/discovery"
+	"github.com/heptio/velero/pkg/features"
 	clientset "github.com/heptio/velero/pkg/generated/clientset/versioned"
 	informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
 	"github.com/heptio/velero/pkg/metrics"
@@ -118,6 +119,7 @@ type serverConfig struct {
 	clientBurst                                                             int
 	profilerAddress                                                         string
 	formatFlag                                                              *logging.FormatFlag
+	defaultResticMaintenanceFrequency                                       time.Duration
 }
 
 type controllerRunInfo struct {
@@ -130,19 +132,20 @@ func NewCommand(f client.Factory) *cobra.Command {
 		volumeSnapshotLocations = flag.NewMap().WithKeyValueDelimiter(":")
 		logLevelFlag            = logging.LogLevelFlag(logrus.InfoLevel)
 		config                  = serverConfig{
-			pluginDir:                      "/plugins",
-			metricsAddress:                 defaultMetricsAddress,
-			defaultBackupLocation:          "default",
-			defaultVolumeSnapshotLocations: make(map[string]string),
-			backupSyncPeriod:               defaultBackupSyncPeriod,
-			defaultBackupTTL:               defaultBackupTTL,
-			podVolumeOperationTimeout:      defaultPodVolumeOperationTimeout,
-			restoreResourcePriorities:      defaultRestorePriorities,
-			clientQPS:                      defaultClientQPS,
-			clientBurst:                    defaultClientBurst,
-			profilerAddress:                defaultProfilerAddress,
-			resourceTerminatingTimeout:     defaultResourceTerminatingTimeout,
-			formatFlag:                     logging.NewFormatFlag(),
+			pluginDir:                         "/plugins",
+			metricsAddress:                    defaultMetricsAddress,
+			defaultBackupLocation:             "default",
+			defaultVolumeSnapshotLocations:    make(map[string]string),
+			backupSyncPeriod:                  defaultBackupSyncPeriod,
+			defaultBackupTTL:                  defaultBackupTTL,
+			podVolumeOperationTimeout:         defaultPodVolumeOperationTimeout,
+			restoreResourcePriorities:         defaultRestorePriorities,
+			clientQPS:                         defaultClientQPS,
+			clientBurst:                       defaultClientBurst,
+			profilerAddress:                   defaultProfilerAddress,
+			resourceTerminatingTimeout:        defaultResourceTerminatingTimeout,
+			formatFlag:                        logging.NewFormatFlag(),
+			defaultResticMaintenanceFrequency: restic.DefaultMaintenanceFrequency,
 		}
 	)
 
@@ -168,6 +171,11 @@ func NewCommand(f client.Factory) *cobra.Command {
 			logger.Infof("setting log-level to %s", strings.ToUpper(logLevel.String()))
 
 			logger.Infof("Starting Velero server %s (%s)", buildinfo.Version, buildinfo.FormattedGitSHA())
+			if len(features.All()) > 0 {
+				logger.Infof("%d feature flags enabled %s", len(features.All()), features.All())
+			} else {
+				logger.Info("No feature flags enabled")
+			}
 
 			if volumeSnapshotLocations.Data() != nil {
 				config.defaultVolumeSnapshotLocations = volumeSnapshotLocations.Data()
@@ -198,6 +206,7 @@ func NewCommand(f client.Factory) *cobra.Command {
 	command.Flags().StringVar(&config.profilerAddress, "profiler-address", config.profilerAddress, "the address to expose the pprof profiler")
 	command.Flags().DurationVar(&config.resourceTerminatingTimeout, "terminating-resource-timeout", config.resourceTerminatingTimeout, "how long to wait on persistent volumes and namespaces to terminate during a restore before timing out")
 	command.Flags().DurationVar(&config.defaultBackupTTL, "default-backup-ttl", config.defaultBackupTTL, "how long to wait by default before backups can be garbage collected")
+	command.Flags().DurationVar(&config.defaultResticMaintenanceFrequency, "default-restic-prune-frequency", config.defaultResticMaintenanceFrequency, "how often 'restic prune' is run for restic repositories by default")
 
 	return command
 }
@@ -689,6 +698,7 @@ func (s *server) runControllers(defaultVolumeSnapshotLocations map[string]string
 			s.veleroClient.VeleroV1(),
 			s.sharedInformerFactory.Velero().V1().BackupStorageLocations(),
 			s.resticManager,
+			s.config.defaultResticMaintenanceFrequency,
 		)
 
 		return controllerRunInfo{
