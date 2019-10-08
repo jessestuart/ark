@@ -9,7 +9,7 @@ ENV GOOS linux
 ENV GOARCH $goarch
 ENV CGO_ENABLED 0
 
-ENV image heptio/velero
+ENV image vmware-tanzu/velero
 WORKDIR /go/src/github.com/${image}
 RUN \
   git clone --depth=1 https://github.com/${image} . && \

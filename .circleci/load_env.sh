@@ -2,7 +2,7 @@
 echo '
 export IMAGE_ID="${REGISTRY}/${IMAGE}:${VERSION}-${TAG}"
 export DIR=$(pwd)
-export GITHUB_REPO=heptio/velero
+export GITHUB_REPO=vmware-tanzu/velero
 export GOPATH=/root/go
 export GOROOT=/usr/local/go
 export IMAGE=velero
