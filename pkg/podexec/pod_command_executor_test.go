@@ -1,5 +1,5 @@
 /*
-Copyright 2017 the Velero contributors.
+Copyright 2017, 2020 the Velero contributors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -34,8 +34,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 
-	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
-	velerotest "github.com/heptio/velero/pkg/test"
+	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	velerotest "github.com/vmware-tanzu/velero/pkg/test"
 )
 
 func TestNewPodCommandExecutor(t *testing.T) {
@@ -188,11 +188,10 @@ func TestExecutePodCommand(t *testing.T) {
 			podCommandExecutor.streamExecutorFactory = streamExecutorFactory
 
 			baseUrl, _ := url.Parse("https://some.server")
-			contentConfig := rest.ContentConfig{
-				GroupVersion: &schema.GroupVersion{Group: "", Version: "v1"},
+			contentConfig := rest.ClientContentConfig{
+				GroupVersion: schema.GroupVersion{Group: "", Version: "v1"},
 			}
-			postRequest := rest.NewRequest(nil, "POST", baseUrl, "/api/v1", contentConfig, rest.Serializers{}, nil, nil, 0)
-			poster.On("Post").Return(postRequest)
+			poster.On("Post").Return(rest.NewRequestWithClient(baseUrl, "/api/v1", contentConfig, nil))
 
 			streamExecutor := &mockStreamExecutor{}
 			defer streamExecutor.AssertExpectations(t)

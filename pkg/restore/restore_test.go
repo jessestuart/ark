@@ -44,21 +44,21 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	kubetesting "k8s.io/client-go/testing"
 
-	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	"github.com/heptio/velero/pkg/builder"
-	"github.com/heptio/velero/pkg/client"
-	"github.com/heptio/velero/pkg/discovery"
-	velerov1informers "github.com/heptio/velero/pkg/generated/informers/externalversions"
-	"github.com/heptio/velero/pkg/kuberesource"
-	"github.com/heptio/velero/pkg/plugin/velero"
-	"github.com/heptio/velero/pkg/restic"
-	resticmocks "github.com/heptio/velero/pkg/restic/mocks"
-	"github.com/heptio/velero/pkg/test"
-	testutil "github.com/heptio/velero/pkg/test"
-	"github.com/heptio/velero/pkg/util/collections"
-	"github.com/heptio/velero/pkg/util/encode"
-	kubeutil "github.com/heptio/velero/pkg/util/kube"
-	"github.com/heptio/velero/pkg/volume"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/builder"
+	"github.com/vmware-tanzu/velero/pkg/client"
+	"github.com/vmware-tanzu/velero/pkg/discovery"
+	velerov1informers "github.com/vmware-tanzu/velero/pkg/generated/informers/externalversions"
+	"github.com/vmware-tanzu/velero/pkg/kuberesource"
+	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
+	"github.com/vmware-tanzu/velero/pkg/restic"
+	resticmocks "github.com/vmware-tanzu/velero/pkg/restic/mocks"
+	"github.com/vmware-tanzu/velero/pkg/test"
+	testutil "github.com/vmware-tanzu/velero/pkg/test"
+	"github.com/vmware-tanzu/velero/pkg/util/collections"
+	"github.com/vmware-tanzu/velero/pkg/util/encode"
+	kubeutil "github.com/vmware-tanzu/velero/pkg/util/kube"
+	"github.com/vmware-tanzu/velero/pkg/volume"
 )
 
 // TestRestoreResourceFiltering runs restores with different combinations
@@ -311,6 +311,36 @@ func TestRestoreResourceFiltering(t *testing.T) {
 			want: map[*test.APIResource][]string{
 				test.Pods():        {"ns-1/pod-1"},
 				test.Deployments(): {"ns-1/deploy-1"},
+				test.PVs():         {},
+			},
+		},
+		{
+			name:    "should not include cluster-scoped resources if restoring subset of namespaces and IncludeClusterResources=nil",
+			restore: defaultRestore().IncludedNamespaces("ns-1").Result(),
+			backup:  defaultBackup().Result(),
+			tarball: newTarWriter(t).
+				addItems("pods",
+					builder.ForPod("ns-1", "pod-1").Result(),
+					builder.ForPod("ns-2", "pod-2").Result(),
+				).
+				addItems("deployments.apps",
+					builder.ForDeployment("ns-1", "deploy-1").Result(),
+					builder.ForDeployment("ns-2", "deploy-2").Result(),
+				).
+				addItems("persistentvolumes",
+					builder.ForPersistentVolume("pv-1").Result(),
+					builder.ForPersistentVolume("pv-2").Result(),
+				).
+				done(),
+			apiResources: []*test.APIResource{
+				test.Pods(),
+				test.Deployments(),
+				test.PVs(),
+			},
+			want: map[*test.APIResource][]string{
+				test.Pods():        {"ns-1/pod-1"},
+				test.Deployments(): {"ns-1/deploy-1"},
+				test.PVs():         {},
 			},
 		},
 		{
@@ -1378,7 +1408,7 @@ func TestRestoreActionAdditionalItems(t *testing.T) {
 			},
 		},
 		{
-			name:    "when using a restore namespace filter, additional items that are cluster-scoped are restored",
+			name:    "when using a restore namespace filter, additional items that are cluster-scoped are restored when IncludeClusterResources=nil",
 			restore: defaultRestore().IncludedNamespaces("ns-1").Result(),
 			backup:  defaultBackup().Result(),
 			tarball: newTarWriter(t).
@@ -1404,8 +1434,8 @@ func TestRestoreActionAdditionalItems(t *testing.T) {
 			},
 		},
 		{
-			name:    "when using a restore resource filter, additional items that are non-included resources are not restored",
-			restore: defaultRestore().IncludedResources("pods").Result(),
+			name:    "additional items that are cluster-scoped are not restored when IncludeClusterResources=false",
+			restore: defaultRestore().IncludeClusterResources(false).Result(),
 			backup:  defaultBackup().Result(),
 			tarball: newTarWriter(t).
 				addItems("pods", builder.ForPod("ns-1", "pod-1").Result()).
@@ -1430,8 +1460,8 @@ func TestRestoreActionAdditionalItems(t *testing.T) {
 			},
 		},
 		{
-			name:    "when IncludeClusterResources=false, additional items that are cluster-scoped are not restored",
-			restore: defaultRestore().IncludeClusterResources(false).Result(),
+			name:    "when using a restore resource filter, additional items that are non-included resources are not restored",
+			restore: defaultRestore().IncludedResources("pods").Result(),
 			backup:  defaultBackup().Result(),
 			tarball: newTarWriter(t).
 				addItems("pods", builder.ForPod("ns-1", "pod-1").Result()).
@@ -1701,6 +1731,9 @@ func (vsg volumeSnapshotterGetter) GetVolumeSnapshotter(name string) (velero.Vol
 type volumeSnapshotter struct {
 	// a map from snapshotID to volumeID
 	snapshotVolumes map[string]string
+
+	// a map from volumeID to new pv name
+	pvName map[string]string
 }
 
 // Init is a no-op.
@@ -1721,8 +1754,15 @@ func (vs *volumeSnapshotter) CreateVolumeFromSnapshot(snapshotID, volumeType, vo
 
 // SetVolumeID sets the persistent volume's spec.awsElasticBlockStore.volumeID field
 // with the provided volumeID.
-func (*volumeSnapshotter) SetVolumeID(pv runtime.Unstructured, volumeID string) (runtime.Unstructured, error) {
+func (vs *volumeSnapshotter) SetVolumeID(pv runtime.Unstructured, volumeID string) (runtime.Unstructured, error) {
 	unstructured.SetNestedField(pv.UnstructuredContent(), volumeID, "spec", "awsElasticBlockStore", "volumeID")
+
+	newPVName, ok := vs.pvName[volumeID]
+	if !ok {
+		return pv, nil
+	}
+
+	unstructured.SetNestedField(pv.UnstructuredContent(), newPVName, "metadata", "name")
 	return pv, nil
 }
 
@@ -2201,13 +2241,81 @@ func TestRestorePersistentVolumes(t *testing.T) {
 				),
 			},
 		},
+		{
+			name:    "when a PV with a snapshot is used by a PVC in a namespace that's being remapped, and the original PV exists in-cluster, the PV is renamed by volumesnapshotter",
+			restore: defaultRestore().NamespaceMappings("source-ns", "target-ns").Result(),
+			backup:  defaultBackup().Result(),
+			tarball: newTarWriter(t).
+				addItems(
+					"persistentvolumes",
+					builder.ForPersistentVolume("source-pv").AWSEBSVolumeID("source-volume").ClaimRef("source-ns", "pvc-1").Result(),
+				).
+				addItems(
+					"persistentvolumeclaims",
+					builder.ForPersistentVolumeClaim("source-ns", "pvc-1").VolumeName("source-pv").Result(),
+				).
+				done(),
+			apiResources: []*test.APIResource{
+				test.PVs(
+					builder.ForPersistentVolume("source-pv").AWSEBSVolumeID("source-volume").ClaimRef("source-ns", "pvc-1").Result(),
+				),
+				test.PVCs(),
+			},
+			volumeSnapshots: []*volume.Snapshot{
+				{
+					Spec: volume.SnapshotSpec{
+						BackupName:           "backup-1",
+						Location:             "default",
+						PersistentVolumeName: "source-pv",
+					},
+					Status: volume.SnapshotStatus{
+						Phase:              volume.SnapshotPhaseCompleted,
+						ProviderSnapshotID: "snapshot-1",
+					},
+				},
+			},
+			volumeSnapshotLocations: []*velerov1api.VolumeSnapshotLocation{
+				builder.ForVolumeSnapshotLocation(velerov1api.DefaultNamespace, "default").Provider("provider-1").Result(),
+			},
+			volumeSnapshotterGetter: map[string]velero.VolumeSnapshotter{
+				"provider-1": &volumeSnapshotter{
+					snapshotVolumes: map[string]string{"snapshot-1": "new-volume"},
+					pvName:          map[string]string{"new-volume": "volumesnapshotter-renamed-source-pv"},
+				},
+			},
+			want: []*test.APIResource{
+				test.PVs(
+					builder.ForPersistentVolume("source-pv").AWSEBSVolumeID("source-volume").ClaimRef("source-ns", "pvc-1").Result(),
+					// note that the renamed PV is not expected to have a claimRef in this test; that would be
+					// added after creation by the Kubernetes PV/PVC controller when it does a bind.
+					builder.ForPersistentVolume("volumesnapshotter-renamed-source-pv").
+						ObjectMeta(
+							builder.WithAnnotations("velero.io/original-pv-name", "source-pv"),
+							builder.WithLabels("velero.io/backup-name", "backup-1", "velero.io/restore-name", "restore-1"),
+						).
+						AWSEBSVolumeID("new-volume").
+						Result(),
+				),
+				test.PVCs(
+					builder.ForPersistentVolumeClaim("target-ns", "pvc-1").
+						ObjectMeta(
+							builder.WithLabels("velero.io/backup-name", "backup-1", "velero.io/restore-name", "restore-1"),
+						).
+						VolumeName("volumesnapshotter-renamed-source-pv").
+						Result(),
+				),
+			},
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.restorer.resourcePriorities = []string{"persistentvolumes", "persistentvolumeclaims"}
-			h.restorer.pvRenamer = func(oldName string) string { return "renamed-" + oldName }
+			h.restorer.pvRenamer = func(oldName string) (string, error) {
+				renamed := "renamed-" + oldName
+				return renamed, nil
+			}
 
 			// set up the VolumeSnapshotLocation informer/lister and add test data to it
 			vslInformer := velerov1informers.NewSharedInformerFactory(h.VeleroClient, 0).Velero().V1().VolumeSnapshotLocations()
@@ -2277,9 +2385,9 @@ func TestRestoreWithRestic(t *testing.T) {
 			backup:       defaultBackup().Result(),
 			apiResources: []*test.APIResource{test.Pods()},
 			podVolumeBackups: []*velerov1api.PodVolumeBackup{
-				builder.ForPodVolumeBackup("velero", "pvb-1").PodName("pod-1").Result(),
-				builder.ForPodVolumeBackup("velero", "pvb-2").PodName("pod-2").Result(),
-				builder.ForPodVolumeBackup("velero", "pvb-3").PodName("pod-4").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-1").PodName("pod-1").SnapshotID("foo").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-2").PodName("pod-2").SnapshotID("foo").Result(),
+				builder.ForPodVolumeBackup("velero", "pvb-3").PodName("pod-4").SnapshotID("foo").Result(),
 			},
 			podWithPVBs: []*corev1api.Pod{
 				builder.ForPod("ns-1", "pod-2").

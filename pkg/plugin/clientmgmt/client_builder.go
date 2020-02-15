@@ -21,12 +21,12 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/hashicorp/go-hclog"
+	hclog "github.com/hashicorp/go-hclog"
 	hcplugin "github.com/hashicorp/go-plugin"
 	"github.com/sirupsen/logrus"
 
-	"github.com/heptio/velero/pkg/features"
-	"github.com/heptio/velero/pkg/plugin/framework"
+	"github.com/vmware-tanzu/velero/pkg/features"
+	"github.com/vmware-tanzu/velero/pkg/plugin/framework"
 )
 
 // clientBuilder builds go-plugin Clients.

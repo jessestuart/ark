@@ -25,9 +25,9 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 
-	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	"github.com/heptio/velero/pkg/util/exec"
-	"github.com/heptio/velero/pkg/util/filesystem"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/util/exec"
+	"github.com/vmware-tanzu/velero/pkg/util/filesystem"
 )
 
 const restoreProgressCheckInterval = 10 * time.Second
@@ -97,18 +97,20 @@ func RunBackup(backupCmd *Command, log logrus.FieldLogger, updateFunc func(veler
 			select {
 			case <-ticker.C:
 				lastLine := getLastLine(stdoutBuf.Bytes())
-				stat, err := decodeBackupStatusLine(lastLine)
-				if err != nil {
-					log.WithError(err).Errorf("error getting restic backup progress")
-				}
+				if len(lastLine) > 0 {
+					stat, err := decodeBackupStatusLine(lastLine)
+					if err != nil {
+						log.WithError(err).Errorf("error getting restic backup progress")
+					}
 
-				// if the line contains a non-empty bytes_done field, we can update the
-				// caller with the progress
-				if stat.BytesDone != 0 {
-					updateFunc(velerov1api.PodVolumeOperationProgress{
-						TotalBytes: stat.TotalBytes,
-						BytesDone:  stat.BytesDone,
-					})
+					// if the line contains a non-empty bytes_done field, we can update the
+					// caller with the progress
+					if stat.BytesDone != 0 {
+						updateFunc(velerov1api.PodVolumeOperationProgress{
+							TotalBytes: stat.TotalBytes,
+							BytesDone:  stat.BytesDone,
+						})
+					}
 				}
 			case <-quit:
 				ticker.Stop()
@@ -153,6 +155,9 @@ func decodeBackupStatusLine(lastLine []byte) (backupStatusLine, error) {
 // have a newline at the end of it, so this returns the substring between the
 // last two newlines.
 func getLastLine(b []byte) []byte {
+	if b == nil || len(b) == 0 {
+		return []byte("")
+	}
 	// subslice the byte array to ignore the newline at the end of the string
 	lastNewLineIdx := bytes.LastIndex(b[:len(b)-1], []byte("\n"))
 	return b[lastNewLineIdx+1 : len(b)-1]
@@ -179,9 +184,9 @@ func getSummaryLine(b []byte) ([]byte, error) {
 // RunRestore runs a `restic restore` command and monitors the volume size to
 // provide progress updates to the caller.
 func RunRestore(restoreCmd *Command, log logrus.FieldLogger, updateFunc func(velerov1api.PodVolumeOperationProgress)) (string, string, error) {
-	snapshotSize, err := getSnapshotSize(restoreCmd.RepoIdentifier, restoreCmd.PasswordFile, restoreCmd.Args[0])
+	snapshotSize, err := getSnapshotSize(restoreCmd.RepoIdentifier, restoreCmd.PasswordFile, restoreCmd.Args[0], restoreCmd.Env)
 	if err != nil {
-		return "", "", err
+		return "", "", errors.Wrap(err, "error getting snapshot size")
 	}
 
 	updateFunc(velerov1api.PodVolumeOperationProgress{
@@ -225,8 +230,9 @@ func RunRestore(restoreCmd *Command, log logrus.FieldLogger, updateFunc func(vel
 	return stdout, stderr, err
 }
 
-func getSnapshotSize(repoIdentifier, passwordFile, snapshotID string) (int64, error) {
+func getSnapshotSize(repoIdentifier, passwordFile, snapshotID string, env []string) (int64, error) {
 	cmd := StatsCommand(repoIdentifier, passwordFile, snapshotID)
+	cmd.Env = env
 
 	stdout, stderr, err := exec.RunCommand(cmd.Cmd())
 	if err != nil {
@@ -239,10 +245,6 @@ func getSnapshotSize(repoIdentifier, passwordFile, snapshotID string) (int64, er
 
 	if err := json.Unmarshal([]byte(stdout), &snapshotStats); err != nil {
 		return 0, errors.Wrap(err, "error unmarshalling restic stats result")
-	}
-
-	if snapshotStats.TotalSize == 0 {
-		return 0, errors.Errorf("error getting snapshot size %+v", snapshotStats)
 	}
 
 	return snapshotStats.TotalSize, nil

@@ -35,14 +35,14 @@ fi
 
 ${GOPATH}/src/k8s.io/code-generator/generate-groups.sh \
   all \
-  github.com/heptio/velero/pkg/generated \
-  github.com/heptio/velero/pkg/apis \
+  github.com/vmware-tanzu/velero/pkg/generated \
+  github.com/vmware-tanzu/velero/pkg/apis \
   "velero:v1" \
-  --go-header-file ${GOPATH}/src/github.com/heptio/velero/hack/boilerplate.go.txt \
+  --go-header-file ${GOPATH}/src/github.com/vmware-tanzu/velero/hack/boilerplate.go.txt \
   $@
 
 go run ${GOPATH}/src/sigs.k8s.io/controller-tools/cmd/controller-gen/main.go \
-  crd \
+  crd:crdVersions=v1beta1,preserveUnknownFields=false \
   output:dir=pkg/generated/crds/manifests \
   paths=./pkg/apis/velero/v1/...
 

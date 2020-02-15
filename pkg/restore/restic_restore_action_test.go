@@ -29,13 +29,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
 
-	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	"github.com/heptio/velero/pkg/builder"
-	"github.com/heptio/velero/pkg/buildinfo"
-	velerofake "github.com/heptio/velero/pkg/generated/clientset/versioned/fake"
-	"github.com/heptio/velero/pkg/plugin/velero"
-	velerotest "github.com/heptio/velero/pkg/test"
-	"github.com/heptio/velero/pkg/util/kube"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/builder"
+	"github.com/vmware-tanzu/velero/pkg/buildinfo"
+	velerofake "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/fake"
+	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
+	velerotest "github.com/vmware-tanzu/velero/pkg/test"
+	"github.com/vmware-tanzu/velero/pkg/util/kube"
 )
 
 func TestGetImage(t *testing.T) {
@@ -69,8 +69,8 @@ func TestGetImage(t *testing.T) {
 			want:      fmt.Sprintf("%s:%s", defaultImageBase, buildinfo.Version),
 		},
 		{
-			name:      "config map with invalid data in 'image' key returns default image with buildinfo.Version as tag",
-			configMap: configMapWithData("image", "not:valid:image"),
+			name:      "config map without '/' in image name returns default image with buildinfo.Version as tag",
+			configMap: configMapWithData("image", "my-image"),
 			want:      fmt.Sprintf("%s:%s", defaultImageBase, buildinfo.Version),
 		},
 		{
@@ -79,9 +79,19 @@ func TestGetImage(t *testing.T) {
 			want:      fmt.Sprintf("%s:%s", "myregistry.io/my-image", buildinfo.Version),
 		},
 		{
+			name:      "config map with untagged image and custom registry port with ':' returns image with buildinfo.Version as tag",
+			configMap: configMapWithData("image", "myregistry.io:34567/my-image"),
+			want:      fmt.Sprintf("%s:%s", "myregistry.io:34567/my-image", buildinfo.Version),
+		},
+		{
 			name:      "config map with tagged image returns tagged image",
 			configMap: configMapWithData("image", "myregistry.io/my-image:my-tag"),
 			want:      "myregistry.io/my-image:my-tag",
+		},
+		{
+			name:      "config map with tagged image and custom registry port with ':' returns tagged image",
+			configMap: configMapWithData("image", "myregistry.io:34567/my-image:my-tag"),
+			want:      "myregistry.io:34567/my-image:my-tag",
 		},
 	}
 
@@ -158,11 +168,13 @@ func TestResticRestoreActionExecute(t *testing.T) {
 					PodName("my-pod").
 					Volume("vol-1").
 					ObjectMeta(builder.WithLabels(velerov1api.BackupNameLabel, backupName)).
+					SnapshotID("foo").
 					Result(),
 				builder.ForPodVolumeBackup(veleroNs, "pvb-2").
 					PodName("my-pod").
 					Volume("vol-2").
 					ObjectMeta(builder.WithLabels(velerov1api.BackupNameLabel, backupName)).
+					SnapshotID("foo").
 					Result(),
 			},
 			want: builder.ForPod("ns-1", "my-pod").

@@ -31,11 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/clock"
 	"k8s.io/client-go/tools/cache"
 
-	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
-	velerov1client "github.com/heptio/velero/pkg/generated/clientset/versioned/typed/velero/v1"
-	informers "github.com/heptio/velero/pkg/generated/informers/externalversions/velero/v1"
-	listers "github.com/heptio/velero/pkg/generated/listers/velero/v1"
-	"github.com/heptio/velero/pkg/restic"
+	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	velerov1client "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/typed/velero/v1"
+	informers "github.com/vmware-tanzu/velero/pkg/generated/informers/externalversions/velero/v1"
+	listers "github.com/vmware-tanzu/velero/pkg/generated/listers/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/restic"
 )
 
 type resticRepositoryController struct {
@@ -190,7 +190,7 @@ func (c *resticRepositoryController) initializeRepo(req *v1.ResticRepository, lo
 
 	return c.patchResticRepository(req, func(req *v1.ResticRepository) {
 		req.Status.Phase = v1.ResticRepositoryPhaseReady
-		req.Status.LastMaintenanceTime = metav1.Time{Time: time.Now()}
+		req.Status.LastMaintenanceTime = &metav1.Time{Time: time.Now()}
 	})
 }
 
@@ -238,12 +238,12 @@ func (c *resticRepositoryController) runMaintenanceIfDue(req *v1.ResticRepositor
 	}
 
 	return c.patchResticRepository(req, func(req *v1.ResticRepository) {
-		req.Status.LastMaintenanceTime = metav1.Time{Time: now}
+		req.Status.LastMaintenanceTime = &metav1.Time{Time: now}
 	})
 }
 
 func dueForMaintenance(req *v1.ResticRepository, now time.Time) bool {
-	return req.Status.LastMaintenanceTime.Add(req.Spec.MaintenanceFrequency.Duration).Before(now)
+	return req.Status.LastMaintenanceTime == nil || req.Status.LastMaintenanceTime.Add(req.Spec.MaintenanceFrequency.Duration).Before(now)
 }
 
 func (c *resticRepositoryController) checkNotReadyRepo(req *v1.ResticRepository, log logrus.FieldLogger) error {

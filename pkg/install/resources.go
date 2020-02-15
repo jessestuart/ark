@@ -26,9 +26,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	v1 "github.com/heptio/velero/pkg/apis/velero/v1"
-	"github.com/heptio/velero/pkg/buildinfo"
-	"github.com/heptio/velero/pkg/generated/crds"
+	v1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/buildinfo"
+	"github.com/vmware-tanzu/velero/pkg/generated/crds"
 )
 
 // Use "latest" if the build process didn't supply a version
@@ -41,7 +41,7 @@ func imageVersion() string {
 
 // DefaultImage is the default image to use for the Velero deployment and restic daemonset containers.
 var (
-	DefaultImage               = "gcr.io/heptio-images/velero:" + imageVersion()
+	DefaultImage               = "velero/velero:" + imageVersion()
 	DefaultVeleroPodCPURequest = "500m"
 	DefaultVeleroPodMemRequest = "128Mi"
 	DefaultVeleroPodCPULimit   = "1000m"
@@ -91,9 +91,11 @@ func objectMeta(namespace, name string) metav1.ObjectMeta {
 	}
 }
 
-func ServiceAccount(namespace string) *corev1.ServiceAccount {
+func ServiceAccount(namespace string, annotations map[string]string) *corev1.ServiceAccount {
+	objMeta := objectMeta(namespace, "velero")
+	objMeta.Annotations = annotations
 	return &corev1.ServiceAccount{
-		ObjectMeta: objectMeta(namespace, "velero"),
+		ObjectMeta: objMeta,
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ServiceAccount",
 			APIVersion: corev1.SchemeGroupVersion.String(),
@@ -185,6 +187,7 @@ func Secret(namespace string, data []byte) *corev1.Secret {
 
 func appendUnstructured(list *unstructured.UnstructuredList, obj runtime.Object) error {
 	u, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&obj)
+
 	// Remove the status field so we're not sending blank data to the server.
 	// On CRDs, having an empty status is actually a validation error.
 	delete(u, "status")
@@ -202,6 +205,7 @@ type VeleroOptions struct {
 	Bucket                            string
 	Prefix                            string
 	PodAnnotations                    map[string]string
+	ServiceAccountAnnotations         map[string]string
 	VeleroPodResources                corev1.ResourceRequirements
 	ResticPodResources                corev1.ResourceRequirements
 	SecretData                        []byte
@@ -211,11 +215,11 @@ type VeleroOptions struct {
 	BSLConfig                         map[string]string
 	VSLConfig                         map[string]string
 	DefaultResticMaintenanceFrequency time.Duration
+	Plugins                           []string
+	NoDefaultBackupLocation           bool
 }
 
-// AllResources returns a list of all resources necessary to install Velero, in the appropriate order, into a Kubernetes cluster.
-// Items are unstructured, since there are different data types returned.
-func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
+func AllCRDs() *unstructured.UnstructuredList {
 	resources := new(unstructured.UnstructuredList)
 	// Set the GVK so that the serialization framework outputs the list properly
 	resources.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "List"})
@@ -225,13 +229,21 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 		appendUnstructured(resources, crd)
 	}
 
+	return resources
+}
+
+// AllResources returns a list of all resources necessary to install Velero, in the appropriate order, into a Kubernetes cluster.
+// Items are unstructured, since there are different data types returned.
+func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
+	resources := AllCRDs()
+
 	ns := Namespace(o.Namespace)
 	appendUnstructured(resources, ns)
 
 	crb := ClusterRoleBinding(o.Namespace)
 	appendUnstructured(resources, crb)
 
-	sa := ServiceAccount(o.Namespace)
+	sa := ServiceAccount(o.Namespace, o.ServiceAccountAnnotations)
 	appendUnstructured(resources, sa)
 
 	if o.SecretData != nil {
@@ -239,8 +251,10 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 		appendUnstructured(resources, sec)
 	}
 
-	bsl := BackupStorageLocation(o.Namespace, o.ProviderName, o.Bucket, o.Prefix, o.BSLConfig)
-	appendUnstructured(resources, bsl)
+	if !o.NoDefaultBackupLocation {
+		bsl := BackupStorageLocation(o.Namespace, o.ProviderName, o.Bucket, o.Prefix, o.BSLConfig)
+		appendUnstructured(resources, bsl)
+	}
 
 	// A snapshot location may not be desirable for users relying on restic
 	if o.UseVolumeSnapshots {
@@ -262,13 +276,16 @@ func AllResources(o *VeleroOptions) (*unstructured.UnstructuredList, error) {
 		deployOpts = append(deployOpts, WithRestoreOnly())
 	}
 
+	if len(o.Plugins) > 0 {
+		deployOpts = append(deployOpts, WithPlugins(o.Plugins))
+	}
+
 	deploy := Deployment(o.Namespace, deployOpts...)
 
 	appendUnstructured(resources, deploy)
 
 	if o.UseRestic {
 		ds := DaemonSet(o.Namespace,
-
 			WithAnnotations(o.PodAnnotations),
 			WithImage(o.Image),
 			WithResources(o.ResticPodResources),

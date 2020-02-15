@@ -21,8 +21,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/heptio/velero/pkg/test"
-	"github.com/heptio/velero/pkg/util/filesystem"
+	"github.com/vmware-tanzu/velero/pkg/test"
+	"github.com/vmware-tanzu/velero/pkg/util/filesystem"
 )
 
 func Test_getSummaryLine(t *testing.T) {
@@ -65,15 +65,17 @@ func Test_getSummaryLine(t *testing.T) {
 
 func Test_getLastLine(t *testing.T) {
 	tests := []struct {
-		output string
+		output []byte
 		want   string
 	}{
-		{`last line
-`, "last line"},
-		{`first line
+		{[]byte(`last line
+`), "last line"},
+		{[]byte(`first line
 second line
 third line
-`, "third line"},
+`), "third line"},
+		{[]byte(""), ""},
+		{nil, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {

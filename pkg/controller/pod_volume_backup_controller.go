@@ -27,6 +27,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/clock"
@@ -34,13 +35,13 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 
-	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	velerov1client "github.com/heptio/velero/pkg/generated/clientset/versioned/typed/velero/v1"
-	informers "github.com/heptio/velero/pkg/generated/informers/externalversions/velero/v1"
-	listers "github.com/heptio/velero/pkg/generated/listers/velero/v1"
-	"github.com/heptio/velero/pkg/restic"
-	"github.com/heptio/velero/pkg/util/filesystem"
-	"github.com/heptio/velero/pkg/util/kube"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	velerov1client "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/typed/velero/v1"
+	informers "github.com/vmware-tanzu/velero/pkg/generated/informers/externalversions/velero/v1"
+	listers "github.com/vmware-tanzu/velero/pkg/generated/listers/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/restic"
+	"github.com/vmware-tanzu/velero/pkg/util/filesystem"
+	"github.com/vmware-tanzu/velero/pkg/util/kube"
 )
 
 type podVolumeBackupController struct {
@@ -181,7 +182,7 @@ func (c *podVolumeBackupController) processBackup(req *velerov1api.PodVolumeBack
 	// update status to InProgress
 	req, err = c.patchPodVolumeBackup(req, func(r *velerov1api.PodVolumeBackup) {
 		r.Status.Phase = velerov1api.PodVolumeBackupPhaseInProgress
-		r.Status.StartTimestamp.Time = c.clock.Now()
+		r.Status.StartTimestamp = &metav1.Time{Time: c.clock.Now()}
 	})
 	if err != nil {
 		log.WithError(err).Error("Error setting PodVolumeBackup StartTimestamp and phase to InProgress")
@@ -226,10 +227,16 @@ func (c *podVolumeBackupController) processBackup(req *velerov1api.PodVolumeBack
 		req.Spec.Tags,
 	)
 
-	// if this is azure, set resticCmd.Env appropriately
+	// Running restic command might need additional provider specific environment variables. Based on the provider, we
+	// set resticCmd.Env appropriately (currently for Azure and S3 based backuplocations)
 	var env []string
 	if strings.HasPrefix(req.Spec.RepoIdentifier, "azure") {
 		if env, err = restic.AzureCmdEnv(c.backupLocationLister, req.Namespace, req.Spec.BackupStorageLocation); err != nil {
+			return c.fail(req, errors.Wrap(err, "error setting restic cmd env").Error(), log)
+		}
+		resticCmd.Env = env
+	} else if strings.HasPrefix(req.Spec.RepoIdentifier, "s3") {
+		if env, err = restic.S3CmdEnv(c.backupLocationLister, req.Namespace, req.Spec.BackupStorageLocation); err != nil {
 			return c.fail(req, errors.Wrap(err, "error setting restic cmd env").Error(), log)
 		}
 		resticCmd.Env = env
@@ -277,7 +284,7 @@ func (c *podVolumeBackupController) processBackup(req *velerov1api.PodVolumeBack
 		r.Status.Path = path
 		r.Status.Phase = velerov1api.PodVolumeBackupPhaseCompleted
 		r.Status.SnapshotID = snapshotID
-		r.Status.CompletionTimestamp.Time = c.clock.Now()
+		r.Status.CompletionTimestamp = &metav1.Time{Time: c.clock.Now()}
 		if emptySnapshot {
 			r.Status.Message = "volume was empty so no snapshot was taken"
 		}
@@ -376,7 +383,7 @@ func (c *podVolumeBackupController) fail(req *velerov1api.PodVolumeBackup, msg s
 	if _, err := c.patchPodVolumeBackup(req, func(r *velerov1api.PodVolumeBackup) {
 		r.Status.Phase = velerov1api.PodVolumeBackupPhaseFailed
 		r.Status.Message = msg
-		r.Status.CompletionTimestamp.Time = c.clock.Now()
+		r.Status.CompletionTimestamp = &metav1.Time{Time: c.clock.Now()}
 	}); err != nil {
 		log.WithError(err).Error("Error setting PodVolumeBackup phase to Failed")
 		return err

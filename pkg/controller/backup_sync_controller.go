@@ -28,13 +28,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/cache"
 
-	velerov1api "github.com/heptio/velero/pkg/apis/velero/v1"
-	velerov1client "github.com/heptio/velero/pkg/generated/clientset/versioned/typed/velero/v1"
-	informers "github.com/heptio/velero/pkg/generated/informers/externalversions/velero/v1"
-	listers "github.com/heptio/velero/pkg/generated/listers/velero/v1"
-	"github.com/heptio/velero/pkg/label"
-	"github.com/heptio/velero/pkg/persistence"
-	"github.com/heptio/velero/pkg/plugin/clientmgmt"
+	velerov1api "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	velerov1client "github.com/vmware-tanzu/velero/pkg/generated/clientset/versioned/typed/velero/v1"
+	informers "github.com/vmware-tanzu/velero/pkg/generated/informers/externalversions/velero/v1"
+	listers "github.com/vmware-tanzu/velero/pkg/generated/listers/velero/v1"
+	"github.com/vmware-tanzu/velero/pkg/label"
+	"github.com/vmware-tanzu/velero/pkg/persistence"
+	"github.com/vmware-tanzu/velero/pkg/plugin/clientmgmt"
 )
 
 type backupSyncController struct {
@@ -48,6 +48,7 @@ type backupSyncController struct {
 	podVolumeBackupLister       listers.PodVolumeBackupLister
 	namespace                   string
 	defaultBackupLocation       string
+	defaultBackupSyncPeriod     time.Duration
 	newPluginManager            func(logrus.FieldLogger) clientmgmt.Manager
 	newBackupStore              func(*velerov1api.BackupStorageLocation, persistence.ObjectStoreGetter, logrus.FieldLogger) (persistence.BackupStore, error)
 }
@@ -77,6 +78,7 @@ func NewBackupSyncController(
 		podVolumeBackupClient:       podVolumeBackupClient,
 		namespace:                   namespace,
 		defaultBackupLocation:       defaultBackupLocation,
+		defaultBackupSyncPeriod:     syncPeriod,
 		backupLister:                backupInformer.Lister(),
 		backupStorageLocationLister: backupStorageLocationInformer.Lister(),
 		podVolumeBackupLister:       podVolumeBackupInformer.Lister(),
@@ -88,7 +90,7 @@ func NewBackupSyncController(
 	}
 
 	c.resyncFunc = c.run
-	c.resyncPeriod = syncPeriod
+	c.resyncPeriod = 30 * time.Second
 	c.cacheSyncWaiters = []cache.InformerSynced{
 		backupInformer.Informer().HasSynced,
 		backupStorageLocationInformer.Informer().HasSynced,
@@ -134,6 +136,30 @@ func (c *backupSyncController) run() {
 
 	for _, location := range locations {
 		log := c.logger.WithField("backupLocation", location.Name)
+
+		syncPeriod := c.defaultBackupSyncPeriod
+		if location.Spec.BackupSyncPeriod != nil {
+			syncPeriod = location.Spec.BackupSyncPeriod.Duration
+			if syncPeriod == 0 {
+				log.Debug("Backup sync period for this location is set to 0, skipping sync")
+				continue
+			}
+
+			if syncPeriod < 0 {
+				log.Debug("Backup sync period must be non-negative")
+				syncPeriod = c.defaultBackupSyncPeriod
+			}
+		}
+
+		lastSync := location.Status.LastSyncedTime
+		if lastSync != nil {
+			log.Debug("Checking if backups need to be synced at this time for this location")
+			nextSync := lastSync.Add(syncPeriod)
+			if time.Now().UTC().Before(nextSync) {
+				continue
+			}
+		}
+
 		log.Debug("Checking backup location for backups to sync into cluster")
 
 		backupStore, err := c.newBackupStore(location, pluginManager, log)
